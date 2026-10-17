@@ -647,6 +647,10 @@ DASHBOARD_HTML = r"""<!doctype html>
   .layer-box { flex: none; width: 200px; display: flex; min-height: 0; }
   .layer-box .leaflet-control-layers { margin: 0; box-shadow: none; flex: 1; min-height: 0; overflow: auto;
                                        box-sizing: border-box; }
+  /* Leaflet は操作パネルが地図の中にある前提で、中のリストに「地図の高さ - 位置」の高さとスクロールを
+     書き込む。地図の外に置いたのでそれを打ち消し、スクロールは外側の枠(地図と同じ高さ)に任せる */
+  .layer-box .leaflet-control-layers-list { height: auto !important; overflow: visible !important;
+                                             padding-right: 0 !important; }
   #arInfo { margin-top: 4px; }
   #arOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   /* 地図のレイヤの操作パネル(leaflet.control.layers.tree)。行の高さと記号の欄の幅をそろえ、
