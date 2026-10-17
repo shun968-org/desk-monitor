@@ -29,7 +29,7 @@
     # camera モード時のみ:
     sudo apt install python3-picamera2
     # 物体検出を使う場合のみ（apt の python3-onnxruntime は Pi 3 で落ちるため pip で入れる）:
-    ~/otomo_venv/bin/pip install onnxruntime
+    ~/desk-monitor/.venv/bin/pip install -r requirements-pi.txt  # scripts/deploy.sh が実行する
 """
 from __future__ import annotations
 
@@ -222,9 +222,9 @@ def _blend_regions(
 # ─── 吹き出し描画 ────────────────────────────────────────────────────────
 
 # フォント候補（先頭から順に試す）
-# ~/show_face_fonts/ は apt-get download + dpkg-deb -x で sudo なしで展開したフォントの置き場
+# show_face_fonts/ は apt-get download + dpkg-deb -x で sudo なしで展開したフォントの置き場
 _FONT_CANDIDATES = [
-    str(Path.home() / 'show_face_fonts/usr/share/fonts/opentype/ipaexfont-gothic/ipaexg.ttf'),
+    str(Path(__file__).parent / 'show_face_fonts/usr/share/fonts/opentype/ipaexfont-gothic/ipaexg.ttf'),
     '/usr/share/fonts/opentype/ipaexfont-gothic/ipaexg.ttf',
     '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
     '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',

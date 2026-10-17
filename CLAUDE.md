@@ -3,19 +3,22 @@
 ## このリポジトリ
 
 Raspberry Pi(`ssh pi_a`、ホスト名 node-a-local)で動くデスクトップモニタ「desk-monitor」のソース一式。
-Pi 上のホームディレクトリにあったファイルを `scp` で取り込んだもの。**実機の正は Pi 側**であり、
-変更を反映するときは `scp` で Pi に戻す。
+**正はこのリポジトリ**であり、Pi への反映は `scripts/deploy.sh [host]`(既定 `pi_a`)で行う。
+rsync で `~/desk-monitor/` に配置し、`~/desk-monitor/.venv` を更新して systemd ユーザーサービスを再起動する。
+Pi 上のファイルを直接編集・`scp` しない(次の deploy で上書き・削除される)。
+ログは `journalctl _SYSTEMD_USER_UNIT=desk-monitor-display.service`(Pi では `journalctl --user` が使えない)。
 
 - `show_face.py`: GC9A01 ディスプレイ(240x240)に表情アニメーション(`faces/`)またはカメラ映像を表示する常駐スクリプト。
   systemd ユーザーサービス `desk-monitor-display`(`deploy/systemd/`)として動く。モード切替は SIGUSR1(face)/ SIGUSR2(camera)
-- `object_detector.py`: camera モードの物体検出(YOLO11n / ONNX Runtime)。モデルは `scripts/export_yolo.sh` で生成し Pi の `~/models/` に置く
-- `trend_monitor.py` / `trend_config.json`: Bluesky・Google Trends・RSS からトレンドを監視する
+- `object_detector.py`: camera モードの物体検出(YOLO11n / ONNX Runtime)。モデル(`models/yolo11n.onnx`、git 管理外)は `scripts/export_yolo.sh` で生成し、`scripts/deploy.sh` が Pi に配置する
+- `trend_monitor.py` / `trend_config.json`: Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセスに吹き出し通知を送る。
+  systemd ユーザーサービス `desk-monitor-trend` として動く
 - `show_camera.py` / `show_image.py`: カメラ・画像表示のユーティリティ
 
 ## 依存関係
 
 - `requirements.txt`: コンテナ・開発機でも入る依存
-- `requirements-pi.txt`: Pi 実機専用(gpiozero, spidev, picamera2, onnxruntime 等)。表示サービスは `~/otomo_venv` で動く
+- `requirements-pi.txt`: Pi 実機専用(gpiozero, spidev, picamera2, onnxruntime 等)。両サービスとも `~/desk-monitor/.venv` で動く
 - スマホアプリとの連携はない前提(mDNS / WebSocket の制御サーバと BLE プロビジョニングは削除済み)
 - Python は Pi と同じ 3.13 系
 

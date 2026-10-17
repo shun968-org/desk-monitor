@@ -5,7 +5,7 @@
 # Pi 3 で推論できる速さにするため、入力サイズは 256x256 にしている。
 #
 # 使い方: scripts/export_yolo.sh
-# Pi への配置: scp models/yolo11n.onnx pi_a:~/models/
+# Pi への配置: scripts/deploy.sh(models/yolo11n.onnx があれば一緒に送る)
 
 set -euo pipefail
 
