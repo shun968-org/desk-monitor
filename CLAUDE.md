@@ -20,7 +20,8 @@ Pi 上のファイルを直接編集・`scp` しない(次の deploy で上書�
     `camera.py`(Picamera2)、`fonts.py`、`paths.py`(素材・設定・モデルの場所)
   - `detector.py`: camera モードの物体検出(YOLO11n / ONNX Runtime)。モデル(`models/yolo11n.onnx`、git 管理外)は
     `scripts/export_yolo.sh` で生成し、`scripts/deploy.sh` が Pi に配置する
-- `feed.py`(pi_a)/ `dashboard.py`(pi_b): camera 表示中の画(検出枠つき)を LAN 内のブラウザに配信する。
+- `feed.py`(pi_a)/ `dashboard.py`(pi_b): camera 表示中の映像(カメラの全視野 640x480、検出枠つき)を LAN 内のブラウザに配信する。
+  カメラは全視野で取得し、物体検出も全視野で行う。LCD には中央の正方形を 240x240 に縮小して出す(`camera.to_lcd`)。
   pi_a は pi_b の feed ポート(8081)に外向きに接続し、閲覧者がいるときだけ JPEG を送る(pi_a は待ち受けポートを開かない)。
   pi_b は HTTP 8080 で MJPEG を配信する(Basic 認証、プライベート IP 以外は拒否)。`dashboard.py` は標準ライブラリだけで動き、
   pi_b では venv を使わない。systemd ユーザーサービス `desk-monitor-dashboard`(`deploy/systemd/dashboard/`)

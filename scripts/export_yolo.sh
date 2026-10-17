@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# 表示プロセス(desk_monitor.display)の物体検出で使う YOLO11n を ONNX に書き出し、models/yolo11n.onnx に置く。
+# ハブ(desk_monitor.hub、開発 PC)の物体検出で使う YOLO11n を ONNX に書き出し、models/yolo11n.onnx に置く。
 # 開発機の Python 環境を汚さないよう Docker コンテナ内で ultralytics を使う。
-# Pi 3 で推論できる速さにするため、入力サイズは 256x256 にしている。
+# 入力サイズの既定は 640x640(開発 PC の CPU で毎フレーム推論できる)。
 #
-# 使い方: scripts/export_yolo.sh
-# Pi への配置: scripts/deploy.sh(models/yolo11n.onnx があれば一緒に送る)
+# 使い方: scripts/export_yolo.sh [入力サイズ(既定 640)]
+# 反映: scripts/deploy-hub.sh(models/ をコンテナにマウントしている)
 
 set -euo pipefail
 
-IMGSZ=256
+IMGSZ="${1:-640}"
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

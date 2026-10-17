@@ -1,15 +1,16 @@
 """YOLO (ONNX) による物体検出と、検出枠・ラベルの描画。
 
-display.py の camera モードから使う。推論は別スレッド (DetectionWorker) で
-最新フレームに対して繰り返し実行し、表示ループは直近の検出結果を重ねて描くだけ
-にすることで、推論が遅い Raspberry Pi 3 でも表示のフレームレートを落とさない。
+推論はハブ(hub.py、開発 PC)で行い、検出枠の描画は表示プロセス(display.py)とハブの両方で使う。
+推論はカメラの全視野に対して行い、円形 LCD(中央の正方形)には to_region で座標を移してから描く。
+推論は別スレッド (DetectionWorker) で最新フレームに対して繰り返し実行し、呼び出し側は
+直近の検出結果を重ねて描くだけにすることで、推論が映像のフレームレートを落とさないようにする。
 
-モデルは Ultralytics YOLO11n を入力 256x256 で ONNX に書き出したものを想定する
+モデルは Ultralytics YOLO11n を ONNX に書き出したものを想定する(入力サイズはモデルから読む)
 （出力 (1, 84, N): 先頭 4 行が cx, cy, w, h、残り 80 行が COCO 各クラスのスコア）。
 書き出し手順は scripts/export_yolo.sh を参照。
 
 依存パッケージ:
-    pip install onnxruntime  # apt の python3-onnxruntime は Pi 3 で SIGILL になるため使わない
+    pip install onnxruntime
 """
 from __future__ import annotations
 
@@ -165,8 +166,11 @@ class DetectionWorker:
     # 推論間隔が長いと次の結果が届く前に消えて点滅するため、間隔の 2 倍は保持する
     STALE_SEC = 1.5
 
-    def __init__(self, detector: YoloDetector, min_interval: float = 0.0) -> None:
+    def __init__(self, detector: YoloDetector, min_interval: float = 0.0,
+                 on_result=None) -> None:
+        """on_result: 推論が終わるたびに on_result(frame, detections) を推論スレッドで呼ぶ。"""
         self._detector = detector
+        self._on_result = on_result
         # 推論の開始間隔の下限（秒）。連続推論による発熱で Pi がスロットリングしないよう間引く
         self._min_interval = min_interval
         self._stale_sec = max(self.STALE_SEC, 2 * min_interval)
@@ -210,6 +214,29 @@ class DetectionWorker:
                 self._detections = detections
                 self._detected_at = now
                 self.inference_sec = now - start
+            if self._on_result is not None:
+                try:
+                    self._on_result(frame, detections)
+                except Exception as exc:
+                    print(f'検出結果の処理に失敗しました: {exc!r}', flush=True)
+
+
+def to_region(detections: list[Detection], x0: int, y0: int, side: int,
+              out_size: int) -> list[Detection]:
+    """全視野の座標の検出結果を、正方形の領域 (x0, y0, side) を out_size に縮小した画の座標に移す。
+
+    領域からはみ出す枠は領域の端で切り、領域と重ならない枠は捨てる。
+    """
+    scale = out_size / side
+    mapped = []
+    for d in detections:
+        x1, y1 = max(d.x1, x0), max(d.y1, y0)
+        x2, y2 = min(d.x2, x0 + side - 1), min(d.y2, y0 + side - 1)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        mapped.append(Detection((x1 - x0) * scale, (y1 - y0) * scale,
+                                (x2 - x0) * scale, (y2 - y0) * scale, d.score, d.class_id))
+    return mapped
 
 
 def _clamp_into_circle(x: float, y: float, w: float, h: float,
@@ -229,8 +256,11 @@ def _clamp_into_circle(x: float, y: float, w: float, h: float,
 
 
 def draw_detections(arr: np.ndarray, detections: list[Detection],
-                    font: ImageFont.ImageFont) -> np.ndarray:
-    """検出枠と「ラベル 信頼度%」を arr に描いて返す。"""
+                    font: ImageFont.ImageFont, circular: bool = True) -> np.ndarray:
+    """検出枠と「ラベル 信頼度%」を arr に描いて返す。
+
+    circular: 円形 LCD 向け。ラベルを円の中に収まるよう左右にずらす
+    """
     if not detections:
         return arr
     img = Image.fromarray(arr)
@@ -247,7 +277,8 @@ def draw_detections(arr: np.ndarray, detections: list[Detection],
         lx, ly = det.x1, det.y1 - th
         if ly < 0:
             lx, ly = det.x1 + 2, det.y1 + 2
-        lx, ly = _clamp_into_circle(lx, ly, tw, th, size)
+        if circular:
+            lx, ly = _clamp_into_circle(lx, ly, tw, th, size)
         draw.rectangle([lx, ly, lx + tw, ly + th], fill=color)
         # 明るい背景色には黒文字、暗い背景色には白文字
         luminance = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]

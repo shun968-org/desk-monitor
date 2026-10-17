@@ -128,6 +128,11 @@ class BubbleOverlay:
         self._source = ''
         self._start: float | None = None
         self._total = 0.0
+        self._listeners: list = []
+
+    def add_listener(self, listener) -> None:
+        """吹き出しを出すたびに listener(text, source, duration) を呼ぶ(ハブへの通知用)。"""
+        self._listeners.append(listener)
 
     def show(self, text: str, source: str, duration: float) -> None:
         with self._lock:
@@ -135,6 +140,11 @@ class BubbleOverlay:
             self._source = source
             self._start = time.time()
             self._total = duration
+        for listener in self._listeners:
+            try:
+                listener(text, source, duration)
+            except Exception:
+                pass  # 通知先の不調で吹き出しを止めない
 
     def apply(self, frame: np.ndarray, t: float) -> np.ndarray:
         with self._lock:

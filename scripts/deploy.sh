@@ -2,23 +2,23 @@
 #
 # desk-monitor を Raspberry Pi の ~/desk-monitor/ に配置し、systemd ユーザーサービスを再起動する。
 #
-#   1. 実行に必要なファイルを rsync で配置する(.venv と models/ は Pi 側のものを残す)
+#   1. 実行に必要なファイルを rsync で配置する(.venv は Pi 側のものを残す)
 #   2. (display のみ)requirements が前回から変わっていれば ~/desk-monitor/.venv を作成・更新する
-#   3. deploy/systemd/<role>/*.service を ~/.config/systemd/user/ に置き、有効化して再起動する
+#   3. deploy/systemd/<role>/*.service を ~/.config/systemd/user/ に置き、有効化して再起動する。
+#      ほかの role の desk-monitor-*.service が残っていれば止めて消す(役割を入れ替えたとき用)
 #
 # 使い方: scripts/deploy.sh [host] [role]
 #   host: ~/.ssh/config の Host 名(既定: pi_a)
-#   role: display   表示プロセスとトレンド監視(既定。pi_a)
-#         dashboard ブラウザ向けダッシュボード(host が pi_b のときの既定)
+#   role: display  円形 LCD の表示プロセスとトレンド監視(pi_a の既定)
+#         camera   カメラ配信サーバ(pi_b の既定)
 #
-# 物体検出モデル(models/yolo11n.onnx)は git 管理外。手元にあれば一緒に配置し、
-# なければ Pi 側の既存のものを使う(scripts/export_yolo.sh で生成できる)。
+# 物体検出とダッシュボード(role hub)は開発 PC で動かす: scripts/deploy-hub.sh
 
 set -euo pipefail
 
 host="${1:-pi_a}"
 case "$host" in
-  pi_b) default_role=dashboard ;;
+  pi_b) default_role=camera ;;
   *) default_role=display ;;
 esac
 role="${2:-$default_role}"
@@ -30,30 +30,25 @@ cd "$repo_root"
 case "$role" in
   display)
     files=(src assets config requirements.txt requirements-pi.txt deploy/systemd/display)
-    if [[ -f models/yolo11n.onnx ]]; then
-      files+=(models/yolo11n.onnx)
-    else
-      echo "注意: models/yolo11n.onnx が手元にないため、Pi 側の既存モデルを使います" >&2
-    fi
     ;;
-  dashboard)
-    files=(src deploy/systemd/dashboard)
+  camera)
+    files=(src deploy/systemd/camera)
     ;;
   *)
-    echo "不明な role: $role(display / dashboard)" >&2
+    echo "不明な role: $role(display / camera)" >&2
     exit 1
     ;;
 esac
 
 echo "==> $host:~/$dest に配置($role)"
 # 配置する内容を一時ディレクトリに組み立ててから丸ごと同期し、リポジトリから消した
-# ファイルは Pi からも消す。.venv/ と models/、実行時に作られるもの(lgpio の通知用パイプ
+# ファイルは Pi からも消す。.venv/ と、実行時に作られるもの(lgpio の通知用パイプ
 # .lgd-nfy* など)は Pi 側にしかないので消さないよう保護する。
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 rsync -a --relative --exclude='__pycache__/' "${files[@]}" "$stage/"
 rsync -az --delete \
-  --filter='P .venv/' --filter='P models/' --filter='P __pycache__/' --filter='P .lgd-nfy*' \
+  --filter='P .venv/' --filter='P __pycache__/' --filter='P .lgd-nfy*' \
   "$stage/" "$host:$dest/"
 
 echo "==> venv を確認し、systemd ユニットを更新"
@@ -78,6 +73,16 @@ units=()
 for f in "deploy/systemd/$role"/*.service; do
   install -m 0644 -D "$f" "$HOME/.config/systemd/user/$(basename "$f")"
   units+=("$(basename "$f")")
+done
+# この role に含まれない desk-monitor のユニット(以前の役割のもの)は止めて消す
+for f in "$HOME/.config/systemd/user"/desk-monitor-*.service; do
+  [[ -e "$f" ]] || continue
+  name="$(basename "$f")"
+  if [[ " ${units[*]} " != *" $name "* ]]; then
+    echo "以前の役割のユニットを削除: $name"
+    systemctl --user disable --now "$name" 2>/dev/null || true
+    rm -f "$f"
+  fi
 done
 systemctl --user daemon-reload
 systemctl --user enable "${units[@]}" >/dev/null

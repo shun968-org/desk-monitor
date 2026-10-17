@@ -1,4 +1,4 @@
-# テスト用(開発機・CI)。Pi には入れない。
--r requirements.txt
+# テスト用(開発機・CI)。Pi には入れない。ハブの依存(onnxruntime・PyAV)も含む。
+-r requirements-hub.txt
 pytest==8.4.2
 pytest-cov==7.0.0
