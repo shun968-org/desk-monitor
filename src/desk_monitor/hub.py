@@ -587,7 +587,10 @@ DASHBOARD_HTML = r"""<!doctype html>
   /* 右の列の残りの高さを、選んだ機器の 3 つのグラフで分ける */
   .charts { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .map-section { flex: 1 1 0; min-height: 220px; display: flex; flex-direction: column; }
-  #map { flex: 1; min-height: 160px; border-radius: 6px; background: #222; }
+  /* Leaflet は地図の部品に z-index 400〜1000 を付けるので、独立した重なりの層に閉じ込める
+     (閉じ込めないとサイドパネルやトーストの上に地図が描かれる) */
+  #map { flex: 1; min-height: 160px; border-radius: 6px; background: #222; position: relative; z-index: 0;
+         isolation: isolate; }
   #arInfo { margin-top: 4px; }
   #arOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   .gizmo { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; align-items: center;
@@ -634,7 +637,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   form { display: flex; gap: 6px; margin-top: 6px; }
   input { flex: 1; min-width: 0; background: #222; color: var(--text); border: 1px solid #444;
           border-radius: 6px; padding: 4px 6px; }
-  .toasts { position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; flex-direction: column;
+  .toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column;
             gap: 8px; width: min(360px, calc(100vw - 32px)); pointer-events: none; }
   .toast { pointer-events: auto; cursor: pointer; background: #263238; border: 1px solid #37474f;
            border-left: 4px solid var(--src, #90a4ae); border-radius: 6px; padding: 8px 10px;
@@ -643,7 +646,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   .toast.leaving { opacity: 0; transition: opacity .3s ease; }
   @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
   @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
-  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 88vw); z-index: 10;
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 88vw); z-index: 100;
             background: var(--panel); border-left: 1px solid var(--line);
             transform: translateX(100%); transition: transform .2s ease; }
   .drawer.open { transform: none; box-shadow: -8px 0 24px #0008; }
