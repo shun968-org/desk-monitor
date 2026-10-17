@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+trend_venv/
+*.egg-info/
+
+# Logs / runtime
+*.log
+*.sock
+*.pid
+
+# Secrets / local env
+.env
+.env.*
+*.pem
+*.key
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Pi 上のバックアップ・一時ファイル
+*.bak
+.lgd-nfy*
+
+# Node
+node_modules/
+
+# 物体検出モデル(scripts/export_yolo.sh で生成する)
+models/*.onnx
+models/*.pt

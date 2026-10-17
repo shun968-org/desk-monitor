@@ -1,0 +1,72 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "excludedCommands": [
+      "gh"
+    ],
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "*.github.com",
+        "*.githubusercontent.com",
+        "registry.npmjs.org",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "nuget.org",
+        "*.nuget.org",
+        "api.notion.com",
+        "*.notion.com",
+        "notion.so",
+        "*.notion.so"
+      ]
+    },
+    "credentials": {
+      "files": [
+        {
+          "path": "~/.ssh",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.aws",
+          "mode": "deny"
+        }
+      ]
+    }
+  },
+  "permissions": {
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Edit(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Edit(~/.aws/**)",
+      "Edit(/**/.env*)",
+      "Read(/**/.credentials*)",
+      "Edit(/**/.credentials*)",
+      "Read(/**/secrets/**)",
+      "Edit(/**/secrets/**)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(ntn auth:*)",
+      "Bash(ntn login:*)",
+      "Bash(ntn logout:*)",
+      "Bash(ntn update:*)",
+      "Bash(ntn workers:*)",
+      "Bash(ntn notion-as-code:*)",
+      "Bash(ntn api *-X*DELETE*)",
+      "Bash(ntn api *--method*DELETE*)",
+      "Bash(printenv:*)",
+      "Bash(env)",
+      "Bash(cat /proc/*/environ*)"
+    ],
+    "allow": [
+      "Bash(ntn whoami)",
+      "Bash(ntn pages get:*)",
+      "Bash(ntn pages edit:*)",
+      "Bash(ntn api v1/pages:*)",
+      "Bash(ntn api v1/blocks/*)",
+      "Bash(ntn api v1/search:*)",
+      "Bash(ntn api ls:*)"
+    ]
+  }
+}
