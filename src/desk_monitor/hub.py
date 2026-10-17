@@ -9,6 +9,7 @@
 - 検出結果(全視野に対する 0〜1 の座標)を表示プロセスに送り、円形 LCD に枠を重ねさせる
 - 表示プロセスに操作(モード切替)を送り、状態とトレンド監視の通知を受け取る
 - ダッシュボードに、検出枠つきの映像・各機器の状態・検出と通知の履歴・操作をまとめる
+- 設置場所とカメラの向き(ar.json)があれば、画角内の観光地を映像に重ね、地図に範囲を示す(ar.py)
 - 履歴は SQLite(既定 ~/.local/share/desk-monitor/hub.sqlite3)に残す
 
 ダッシュボードは 127.0.0.1 だけで待ち受ける(開発 PC 上のブラウザからのみ見る)。
@@ -42,6 +43,7 @@ import numpy as np
 from PIL import Image
 
 from desk_monitor import sysstat, wire
+from desk_monitor.ar import CameraConfig, PoiStore
 from desk_monitor.detector import Detection, DetectionWorker, draw_detections, load_detector
 from desk_monitor.fonts import get_font
 from desk_monitor.paths import MODELS_DIR
@@ -54,6 +56,7 @@ DEFAULT_MODEL = MODELS_DIR / 'dfine_l_obj365.onnx'
 # 機器の状態の推移を残す長さ(状態は約 2 秒ごとに届く)
 METRICS_SEC = 600
 DEFAULT_DB = Path.home() / '.local' / 'share' / 'desk-monitor' / 'hub.sqlite3'
+DEFAULT_AR_CONFIG = Path.home() / '.config' / 'desk-monitor' / 'ar.json'
 RETRY_SEC = 5.0
 PING_SEC = 2.0
 # この秒数見えなくなったら、その種類の検出を「終わった」とみなす(一瞬の見落としで記録を分けない)
@@ -445,6 +448,9 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             except ValueError:
                 since = 0.0
             self._json({'notifications': self.server.state.history.notifications_since(since)})
+        elif url.path == '/api/ar':
+            ar = self.server.ar
+            self._json(ar.snapshot() if ar is not None else {'camera': None, 'pois': []})
         elif url.path == '/api/metrics':
             self._json(self.server.state.metrics_snapshot())
         elif url.path == '/api/history':
@@ -468,8 +474,19 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             self.send_error(400)
             return
+        if not isinstance(body, dict):
+            self.send_error(400)
+            return
         url = urlsplit(self.path)
         link = self.server.display
+        if url.path == '/api/ar/view' and self.server.ar is not None:
+            try:
+                self.server.ar.set_view(body)
+            except (ValueError, TypeError) as exc:
+                self._json({'ok': False, 'error': str(exc)}, 400)
+                return
+            self._json(self.server.ar.snapshot())
+            return
         if url.path == '/api/mode' and body.get('mode') in ('face', 'camera'):
             ok = link.send({'type': 'mode', 'mode': body['mode']})
         else:
@@ -519,9 +536,11 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, addr: tuple[str, int], state: HubState, display: DisplayLink) -> None:
+    def __init__(self, addr: tuple[str, int], state: HubState, display: DisplayLink,
+                 ar: PoiStore | None = None) -> None:
         self.state = state
         self.display = display
+        self.ar = ar
         self._fonts: dict[int, object] = {}
         super().__init__(addr, _DashboardHandler)
 
@@ -539,6 +558,8 @@ DASHBOARD_HTML = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>desk-monitor</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   :root { color-scheme: dark; --bg: #111; --panel: #1b1b1b; --line: #2a2a2a; --text: #ddd;
           --muted: #8a8a8a; --ok: #4caf50; --warn: #ffb300; --ng: #ef5350; }
@@ -564,7 +585,34 @@ DASHBOARD_HTML = r"""<!doctype html>
   .kv { color: var(--muted); font-size: 12px; }
   .warn { color: var(--warn); }
   /* 右の列の残りの高さを、選んだ機器の 3 つのグラフで分ける */
-  .charts { flex: 1; display: flex; flex-direction: column; }
+  .charts { flex: 1.2 1 0; display: flex; flex-direction: column; }
+  .map-section { flex: 1 1 0; min-height: 220px; display: flex; flex-direction: column; }
+  #map { flex: 1; min-height: 160px; border-radius: 6px; background: #222; }
+  #arInfo { margin-top: 4px; }
+  #arOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .gizmo { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; align-items: center;
+           gap: 2px; z-index: 2; }
+  .gizmo[hidden] { display: none; }
+  #gizmo { width: 96px; height: 96px; border-radius: 50%; background: #000000a0; border: 1px solid #ffffff40;
+           cursor: grab; touch-action: none; }
+  #gizmo:active { cursor: grabbing; }
+  #gizmo:focus-visible { outline: 2px solid #42a5f5; outline-offset: 2px; }
+  .gizmo-text { font-size: 11px; background: #000000a0; border-radius: 4px; padding: 0 6px; color: #ddd;
+                font-variant-numeric: tabular-nums; }
+  .range-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .range { position: relative; flex: 1; height: 22px; }
+  .range-track { position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px; background: #333; }
+  .range-fill { position: absolute; top: 0; bottom: 0; background: #ffa726; border-radius: 2px; }
+  /* 2 つの range を重ね、つまみだけ操作できるようにする(1 本のバーで開始〜終了を選ぶ) */
+  .range input { position: absolute; left: 0; width: 100%; top: 0; height: 22px; margin: 0; background: none;
+                 pointer-events: none; -webkit-appearance: none; appearance: none; }
+  .range input::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 14px; height: 14px;
+                 border-radius: 50%; background: #fff; border: 2px solid #ffa726; cursor: pointer; }
+  .range input::-moz-range-thumb { pointer-events: auto; width: 12px; height: 12px; border-radius: 50%;
+                 background: #fff; border: 2px solid #ffa726; cursor: pointer; }
+  .range input::-moz-range-track { background: none; }
+  .range input:focus-visible::-webkit-slider-thumb { outline: 2px solid #42a5f5; }
+  #rangeText { min-width: 92px; text-align: right; font-variant-numeric: tabular-nums; }
   .device-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
   .device-tabs [role="tab"] { background: none; border: 0; border-bottom: 2px solid transparent;
                               border-radius: 0; padding: 4px 10px; color: var(--muted); }
@@ -624,6 +672,13 @@ DASHBOARD_HTML = r"""<!doctype html>
     <h2>カメラ(全視野・検出枠つき)</h2>
     <div class="video">
       <img id="video" alt="カメラ映像">
+      <canvas id="arOverlay" aria-hidden="true"></canvas>
+      <!-- カメラの向きを変える 3 軸のアイコン(ドラッグ: 方位と傾き、Shift+ドラッグかホイール: 回転、矢印キーでも可) -->
+      <div class="gizmo" id="gizmoBox">
+        <canvas id="gizmo" tabindex="0" role="slider" aria-label="カメラの向き(左右の矢印で方位、上下で傾き、Shift+左右で回転)"
+                aria-valuemin="0" aria-valuemax="359" aria-valuenow="0"></canvas>
+        <div class="gizmo-text" id="gizmoText"></div>
+      </div>
       <div class="msg" id="videoMsg">接続中…</div>
     </div>
   </section>
@@ -634,7 +689,22 @@ DASHBOARD_HTML = r"""<!doctype html>
         <button id="modeFace" data-mode="face">face</button>
         <button id="modeCamera" data-mode="camera">camera</button>
       </div>
+      <label class="kv" style="display:block; margin-top:6px"><input type="checkbox" id="arToggle" checked> 観光地のラベルを映像に重ねる</label>
       <div class="kv" id="opMsg"></div>
+    </section>
+    <section class="map-section">
+      <h2>観光地の範囲(扇形: カメラの画角と距離の上限)</h2>
+      <div id="map" role="img" aria-label="設置場所とラベルを出す範囲の地図"></div>
+      <div class="range-row">
+        <span class="kv">距離</span>
+        <div class="range" id="rangeBox">
+          <div class="range-track"><div class="range-fill" id="rangeFill"></div></div>
+          <input type="range" id="rangeMin" min="0" max="50" step="0.5" value="0" aria-label="ラベルを出す距離の開始(km)">
+          <input type="range" id="rangeMax" min="0" max="50" step="0.5" value="20" aria-label="ラベルを出す距離の終了(km)">
+        </div>
+        <span class="kv" id="rangeText"></span>
+      </div>
+      <div class="kv" id="arInfo"></div>
     </section>
     <section class="charts">
       <div class="device-tabs" role="tablist" aria-label="機器">
@@ -871,6 +941,275 @@ async function refreshMetrics() {
   try { metrics = await (await fetch('/api/metrics', { cache: 'no-store' })).json(); } catch (e) { /* 次の周期で */ }
 }
 
+// ─── 観光地の AR と地図 ───
+let ar = null;      // ハブから受けた設定と観光地(方位・距離)
+let view = null;    // いまの向きと距離の範囲(ダッシュボードで動かす)
+let map = null;
+const rad = (d) => d * Math.PI / 180;
+const deg = (r) => r * 180 / Math.PI;
+
+// 映像(object-fit: contain)が枠の中で実際に描かれている範囲
+function videoRect() {
+  const box = video.getBoundingClientRect();
+  const iw = video.naturalWidth || 4, ih = video.naturalHeight || 3;
+  const scale = Math.min(box.width / iw, box.height / ih);
+  const w = iw * scale, h = ih * scale;
+  return { x: (box.width - w) / 2, y: (box.height - h) / 2, w, h, bw: box.width, bh: box.height };
+}
+
+function fmtKm(m) { return m >= 10000 ? `${Math.round(m / 1000)}km` : `${(m / 1000).toFixed(1)}km`; }
+
+// カメラの座標軸(東・北・上の座標で、右・上・前)。方位→傾き→回転の順に回す
+function cameraBasis(v) {
+  const h = rad(v.heading), p = rad(v.pitch), r = rad(v.roll);
+  const f = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)];
+  const r0 = [Math.cos(h), -Math.sin(h), 0];
+  const u0 = [-Math.sin(h) * Math.sin(p), -Math.cos(h) * Math.sin(p), Math.cos(p)];
+  const right = r0.map((x, i) => x * Math.cos(r) - u0[i] * Math.sin(r));
+  const up = u0.map((x, i) => x * Math.cos(r) + r0[i] * Math.sin(r));
+  return { f, right, up };
+}
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+// 方位 az(度)・仰角 0 の方向が、映像のどこ(0〜1)に来るか。カメラの後ろなら null
+function projectDir(az, basis, c) {
+  const d = [Math.sin(rad(az)), Math.cos(rad(az)), 0];
+  const z = dot(d, basis.f);
+  if (z <= 1e-6) return null;
+  let x = 0.5 + dot(d, basis.right) / z / (2 * Math.tan(rad(c.hfov / 2)));
+  const y = 0.5 - dot(d, basis.up) / z / (2 * Math.tan(rad(c.vfov / 2)));
+  if (c.mirror) x = 1 - x;
+  return { x, y };
+}
+
+// 映像に出す観光地: 画面内かつ距離の範囲内で、近い順に max_labels 件
+function visiblePois() {
+  if (!ar?.camera || !view) return [];
+  const basis = cameraBasis(view), out = [];
+  for (const p of ar.pois) {
+    if (p.distance_m < view.min_distance_km * 1000 || p.distance_m > view.max_distance_km * 1000) continue;
+    const pos = projectDir(p.bearing, basis, ar.camera);
+    if (pos && pos.x >= 0 && pos.x <= 1 && pos.y >= 0 && pos.y <= 1) out.push({ ...p, ...pos });
+    if (out.length >= ar.camera.max_labels) break;
+  }
+  return out;
+}
+
+function drawAr() {
+  const canvas = $('arOverlay');
+  const r = videoRect();
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(r.bw * ratio); canvas.height = Math.round(r.bh * ratio);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, r.bw, r.bh);
+  $('gizmoBox').hidden = !ar?.camera;
+  drawGizmo();
+  if (!ar?.camera || !view || !$('arToggle').checked || !video.naturalWidth) return;
+  const c = ar.camera, basis = cameraBasis(view);
+  const toPx = (pos) => ({ x: r.x + pos.x * r.w, y: r.y + pos.y * r.h });
+  ctx.save();
+  ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
+  // 地平線(仰角 0 の線。回転していれば傾く)
+  const left = projectDir(view.heading - c.hfov * 0.75, basis, c), right = projectDir(view.heading + c.hfov * 0.75, basis, c);
+  if (left && right) {
+    const a = toPx(left), b = toPx(right);
+    ctx.strokeStyle = '#ffffff55'; ctx.setLineDash([6, 6]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
+  }
+  const fontSize = Math.max(11, Math.round(r.w / 70));
+  ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
+  ctx.textBaseline = 'middle';
+  // 左から順に、横に重ならない段へ並べる(重なるときは一段上に積む)
+  const rowH = fontSize + 10, rows = [];
+  const labels = visiblePois().sort((a, b) => a.x - b.x).map((p) => {
+    const text = `${p.name} ${fmtKm(p.distance_m)}`;
+    const w = ctx.measureText(text).width + 12;
+    const pt = toPx(p);
+    let row = 0;
+    while (rows[row] !== undefined && rows[row] > pt.x - w / 2 - 4) row++;
+    rows[row] = pt.x + w / 2;
+    return { text, w, pt, row };
+  });
+  for (const { text, w, pt, row } of labels) {
+    const cy = pt.y - 24 - row * rowH;
+    ctx.strokeStyle = '#ffcc80'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(pt.x, cy + rowH / 2 - 4); ctx.lineTo(pt.x, pt.y); ctx.stroke();
+    ctx.fillStyle = '#ffcc80';
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2); ctx.fill();
+    const lx = Math.min(Math.max(pt.x - w / 2, r.x), r.x + r.w - w);
+    ctx.fillStyle = '#000000b0';
+    ctx.fillRect(lx, cy - rowH / 2 + 2, w, rowH - 4);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(text, lx + 6, cy);
+  }
+  ctx.restore();
+  ctx.font = '10px system-ui, sans-serif'; ctx.fillStyle = '#ffffffaa'; ctx.textBaseline = 'bottom';
+  ctx.fillText(ar.attribution.pois, r.x + 6, r.y + r.h - 4);
+}
+
+// 3 軸のアイコン: 北(赤)・東(緑)・上(青)の軸を、カメラから見た向きで描く
+function drawGizmo() {
+  const canvas = $('gizmo');
+  if (!view) return;
+  const size = 96, ratio = window.devicePixelRatio || 1;
+  canvas.width = size * ratio; canvas.height = size * ratio;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, size, size);
+  const basis = cameraBasis(view), c = size / 2, len = 34;
+  const axes = [
+    { v: [0, 1, 0], color: '#ef5350', label: 'N' }, { v: [1, 0, 0], color: '#66bb6a', label: 'E' },
+    { v: [0, 0, 1], color: '#42a5f5', label: 'U' },
+  ].map((a) => ({ ...a, sx: dot(a.v, basis.right), sy: dot(a.v, basis.up), depth: dot(a.v, basis.f) }))
+    .sort((a, b) => b.depth - a.depth);  // 奥(カメラの前方)の軸から描く
+  ctx.font = '600 11px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const a of axes) {
+    const x = c + a.sx * len, y = c - a.sy * len;
+    ctx.globalAlpha = a.depth > 0.3 ? 0.55 : 1;  // カメラの向こうへ伸びる軸は薄く
+    ctx.strokeStyle = a.color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke();
+    ctx.fillStyle = a.color;
+    ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(a.label, x, y + 0.5);
+  }
+  ctx.globalAlpha = 1;
+  $('gizmoText').textContent = `方位 ${Math.round(view.heading)}° 傾き ${Math.round(view.pitch)}° 回転 ${Math.round(view.roll)}°`;
+  canvas.setAttribute('aria-valuenow', String(Math.round(view.heading)));
+  canvas.setAttribute('aria-valuetext', $('gizmoText').textContent);
+}
+
+// 地点から方位・距離だけ進んだ地点(扇形の弧を描くため)
+function destination(lat, lon, bearingDeg, distM) {
+  const R = 6371000, d = distM / R, b = rad(bearingDeg);
+  const p1 = rad(lat), l1 = rad(lon);
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return [deg(p2), deg(l2)];
+}
+
+function drawMap() {
+  if (!ar?.camera || !view || typeof L === 'undefined') {
+    $('arInfo').textContent = ar && !ar.camera ? '設置場所の設定(ar.json)がありません' : '';
+    return;
+  }
+  const c = ar.camera;
+  if (!map) {
+    map = L.map('map', { zoomControl: true, attributionControl: true });
+    L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: `<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">${ar.attribution.tiles}</a> | ${ar.attribution.pois}`,
+    }).addTo(map);
+    map.layers = L.layerGroup().addTo(map);
+  }
+  map.layers.clearLayers();
+  // 扇形(内側を切り欠いた形): 画角の左端〜右端、開始〜終了の距離
+  const inner = view.min_distance_km * 1000, outer = view.max_distance_km * 1000;
+  const from = view.heading - c.hfov / 2, n = 32, outerArc = [], innerArc = [];
+  for (let i = 0; i <= n; i++) {
+    const b = from + c.hfov * i / n;
+    outerArc.push(destination(c.lat, c.lon, b, outer));
+    innerArc.push(inner > 0 ? destination(c.lat, c.lon, b, inner) : [c.lat, c.lon]);
+  }
+  const sector = L.polygon([...outerArc, ...innerArc.reverse()], { color: '#ffa726', weight: 1.5, fillOpacity: 0.12 });
+  map.layers.addLayer(sector);
+  L.circleMarker([c.lat, c.lon], { radius: 6, color: '#fff', weight: 2, fillColor: '#1e88e5', fillOpacity: 1 })
+    .bindTooltip('設置場所').addTo(map.layers);
+  const shown = new Set(visiblePois().map((p) => p.name));
+  for (const p of ar.pois) {
+    const isShown = shown.has(p.name);
+    L.circleMarker([p.lat, p.lon], {
+      radius: isShown ? 6 : 3, weight: 1, color: '#000',
+      fillColor: isShown ? '#ff7043' : '#9e9e9e', fillOpacity: isShown ? 0.95 : 0.5,
+    }).bindTooltip(`${p.name}(${p.kind}、${fmtKm(p.distance_m)})`).addTo(map.layers);
+  }
+  if (!map.fitted) { map.fitBounds(sector.getBounds(), { padding: [10, 10] }); map.fitted = true; }
+  $('arInfo').textContent = `表示中 ${shown.size} 件 / 周辺 ${ar.pois.length} 件`
+    + (ar.error ? '(データの取得に失敗、保存済みのデータを表示)' : '');
+}
+
+// 距離の範囲のバー(2 つのつまみ)
+function syncRange() {
+  const lo = $('rangeMin'), hi = $('rangeMax'), max = Number(hi.max);
+  $('rangeFill').style.left = `${view.min_distance_km / max * 100}%`;
+  $('rangeFill').style.right = `${100 - view.max_distance_km / max * 100}%`;
+  lo.value = view.min_distance_km; hi.value = view.max_distance_km;
+  $('rangeText').textContent = `${view.min_distance_km}〜${view.max_distance_km} km`;
+}
+for (const id of ['rangeMin', 'rangeMax']) {
+  $(id).addEventListener('input', () => {
+    if (!view) return;
+    let lo = Number($('rangeMin').value), hi = Number($('rangeMax').value);
+    // つまみが交差しないようにする(最小 0.5km の幅)
+    if (lo > hi - 0.5) { if (id === 'rangeMin') lo = hi - 0.5; else hi = lo + 0.5; }
+    view.min_distance_km = Math.max(0, lo); view.max_distance_km = Math.min(Number($('rangeMax').max), hi);
+    changed();
+  });
+}
+
+let saveTimer = null;
+function changed() {
+  syncRange(); drawAr(); drawMap();
+  // 動かし終わってから保存する
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const res = await fetch('/api/ar/view', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Desk-Monitor': '1' },
+      body: JSON.stringify(view),
+    });
+    saveTimer = null;
+    if (!res.ok) $('arInfo').textContent = '向きを保存できませんでした';
+  }, 800);
+}
+
+function rotate(dh, dp, dr) {
+  if (!view) return;
+  view.heading = ((view.heading + dh) % 360 + 360) % 360;
+  view.pitch = Math.max(-45, Math.min(45, view.pitch + dp));
+  view.roll = Math.max(-45, Math.min(45, view.roll + dr));
+  changed();
+}
+
+// アイコンのドラッグ: 左右で方位、上下で傾き、Shift を押しながら左右で回転
+let drag = null;
+$('gizmo').addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, roll: e.shiftKey }; $('gizmo').setPointerCapture(e.pointerId); });
+$('gizmo').addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.roll) rotate(0, 0, dx * 0.3); else rotate(-dx * 0.5, dy * 0.3, 0);
+});
+$('gizmo').addEventListener('pointerup', () => { drag = null; });
+$('gizmo').addEventListener('wheel', (e) => { e.preventDefault(); rotate(0, 0, Math.sign(e.deltaY)); }, { passive: false });
+$('gizmo').addEventListener('keydown', (e) => {
+  const step = e.altKey ? 0.2 : 1;
+  const keys = e.shiftKey
+    ? { ArrowLeft: [0, 0, -step], ArrowRight: [0, 0, step] }
+    : { ArrowLeft: [-step, 0, 0], ArrowRight: [step, 0, 0], ArrowUp: [0, step, 0], ArrowDown: [0, -step, 0] };
+  if (!keys[e.key]) return;
+  e.preventDefault(); rotate(...keys[e.key]);
+});
+
+async function refreshAr() {
+  try {
+    ar = await (await fetch('/api/ar', { cache: 'no-store' })).json();
+    if (ar.camera) {
+      $('rangeMin').max = $('rangeMax').max = ar.camera.fetch_radius_km;
+      // 操作中でなければ、保存されている向きに合わせる
+      if (!view || !saveTimer) view = Object.fromEntries(['heading', 'pitch', 'roll', 'min_distance_km', 'max_distance_km'].map((k) => [k, ar.camera[k]]));
+      syncRange();
+    }
+    drawMap(); drawAr();
+  } catch (e) { /* 次の周期で */ }
+}
+$('arToggle').addEventListener('change', drawAr);
+video.addEventListener('load', drawAr);
+new ResizeObserver(() => { drawAr(); map?.invalidateSize(); }).observe($('video'));
+
+refreshAr();
+setInterval(refreshAr, 60000);
+// MJPEG はブラウザによって読み込みイベントが出ないので、映像の大きさが分かるまで描き直す
+setInterval(drawAr, 2000);
 refreshMetrics().then(drawCharts); refreshState(); refreshHistory();
 setInterval(refreshMetrics, 2000);
 setInterval(pollNotifications, 2000);
@@ -895,6 +1234,9 @@ def main() -> None:
     parser.add_argument('--threads', type=int, default=4, help='推論のスレッド数 (既定: 4)')
     parser.add_argument('--confirm', type=int, default=2,
                         help='同じ物が何回続けて検出されたら表示するか。誤検出のちらつきを抑える (既定: 2)')
+    parser.add_argument('--ar-config', type=Path,
+                        default=Path(os.environ.get('DESK_MONITOR_AR_CONFIG', DEFAULT_AR_CONFIG)),
+                        help=f'設置場所とカメラの向き(AR)。なければ AR を出さない (既定: {DEFAULT_AR_CONFIG})')
     parser.add_argument('--db', type=Path, default=Path(os.environ.get('DESK_MONITOR_DB', DEFAULT_DB)),
                         help=f'履歴の SQLite (既定: {DEFAULT_DB})')
     args = parser.parse_args()
@@ -934,13 +1276,33 @@ def main() -> None:
     for target, name in ((CameraLink(camera_addr, token, state, worker).run_forever, 'camera'),
                          (display.run_forever, 'display')):
         threading.Thread(target=target, daemon=True, name=name).start()
+
+    ar = None
+    try:
+        config = CameraConfig.load(args.ar_config)
+    except (ValueError, TypeError) as exc:
+        log.warning('AR の設定が不正なため使いません: %s', exc)
+        config = None
+    if config is not None:
+        ar = PoiStore(config, args.db.parent / 'pois.json', view_path=args.db.parent / 'ar_view.json')
+
+        def keep_pois() -> None:
+            # 取得に失敗していれば 10 分後、成功していれば 1 時間後に確かめ直す(新しければ取りに行かない)
+            while True:
+                ar.load()
+                time.sleep(600 if ar.error or not ar.pois else 3600)
+
+        threading.Thread(target=keep_pois, daemon=True, name='pois').start()
+        log.info('AR: 方位 %.0f°、画角 %.1f°、%.0f〜%.0f km', ar.config.heading, ar.config.hfov,
+                 ar.config.min_distance_km, ar.config.max_distance_km)
+
     def housekeeping() -> None:
         while True:
             time.sleep(2.0)
             state.expire(time.time())
 
     threading.Thread(target=housekeeping, daemon=True, name='housekeeping').start()
-    server = DashboardServer((args.bind, args.port), state, display)
+    server = DashboardServer((args.bind, args.port), state, display, ar)
     log.info('ダッシュボード: http://%s:%d/', args.bind, args.port)
     try:
         server.serve_forever()

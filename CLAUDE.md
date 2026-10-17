@@ -41,6 +41,11 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
   `detector.load_detector` が種類を判別する。実際の映像(1280x960)での比較: YOLO11m 315ms・誤検出多め、
   D-FINE-L COCO 版 358ms・COCO にない物を近い種類に誤分類、D-FINE-L Objects365 版 395ms・眼鏡やイヤホンも正しく出る、
   D-FINE-X Objects365 版 724ms。D-FINE の Objects365 系の重みは Objects365 の利用条件を受ける可能性がある(商用利用は要確認)
+- `ar.py`(開発 PC): 固定設置のカメラの映像に、見えている方角の観光地を重ねる簡易 AR。
+  設置場所・画角は `~/.config/desk-monitor/ar.json`(個人の住所に当たるのでリポジトリに置かない)。
+  観光地は OpenStreetMap(Overpass API、ODbL)から 50km 圏を取得して `~/.local/share/desk-monitor/pois.json` に保存する
+  (1 週間ごとに取り直す)。地図タイルは国土地理院の地理院タイル。画面上の位置はダッシュボード(ブラウザ)で計算し、
+  映像右上の 3 軸アイコンで変えた向きと、距離の範囲バーの値は `ar_view.json` に保存される
 - `trend.py`(pi_a): Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセス経由でハブに通知を送る(ダッシュボードにトースト表示。円形 LCD には出さない)。
   設定は `config/trend_config.json`
 - `wire.py`: 機器間の通信(JSON ヘッダ + ペイロード、hello でトークン認証)
