@@ -75,7 +75,7 @@ def loop_parts(monkeypatch, restore_signals):
 
     monkeypatch.setattr(display, '_create_camera', lambda token: FakeCamera())
     monkeypatch.setattr(display, 'FaceAnimator', FakeAnimator)
-    monkeypatch.setattr(display, 'start_socket_listener', lambda bubble, path: None)
+    monkeypatch.setattr(display, 'start_socket_listener', lambda handler, path: None)
     monkeypatch.delenv('DESK_MONITOR_TOKEN', raising=False)
     return camera_frame, face_frame, FakeCamera
 

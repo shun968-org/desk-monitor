@@ -1,6 +1,6 @@
 """GC9A01 ディスプレイの常駐型表示プロセス(systemd ユーザーサービス desk-monitor-display)。
 
-  face   : 表情アニメーション(face.py)を表示し、trend.py からの吹き出し通知を重ねる
+  face   : 表情アニメーション(face.py)を表示する
   camera : カメラの全視野の中央の正方形を表示する(camera.to_lcd)。
            ハブ(開発 PC)が物体検出の結果を送ってくれば、検出枠とラベルを重ねる。
            ハブが止まっていれば枠なしの映像だけを出す
@@ -38,13 +38,13 @@ import sys
 import time
 
 from desk_monitor import wire
-from desk_monitor.bubble import BubbleOverlay, start_socket_listener
 from desk_monitor.camera import CameraSource, lcd_region, to_lcd
 from desk_monitor.control import ControlServer, DetectionOverlay, DisplayControl
 from desk_monitor.detector import draw_detections, to_region
 from desk_monitor.face import FaceAnimator
 from desk_monitor.fonts import get_font
 from desk_monitor.lcd import WIDTH, GC9A01
+from desk_monitor.notification import start_socket_listener
 from desk_monitor.remote_camera import RemoteCamera
 
 
@@ -97,8 +97,6 @@ def run(lcd: GC9A01, fps: float, expression: str, initial_mode: str,
     animator = FaceAnimator()
     token = os.environ.get('DESK_MONITOR_TOKEN', '')
     camera = _create_camera(token)
-    bubble = BubbleOverlay()
-    start_socket_listener(bubble, socket_path)
     overlay = DetectionOverlay()
     stats = _Stats()
     label_font = get_font(13)
@@ -112,8 +110,9 @@ def run(lcd: GC9A01, fps: float, expression: str, initial_mode: str,
         def set_mode(mode: str) -> None:
             controller.mode = mode
 
-        control = DisplayControl(status, set_mode, bubble.show, overlay)
-        bubble.add_listener(control.notify_bubble)
+        control = DisplayControl(status, set_mode, overlay)
+        # トレンド監視の通知は LCD には出さず、ハブに中継してダッシュボードに出す
+        start_socket_listener(control.notify, socket_path)
         try:
             ControlServer(('0.0.0.0', control_port), token, control).start()
         except OSError as exc:
@@ -134,8 +133,7 @@ def run(lcd: GC9A01, fps: float, expression: str, initial_mode: str,
                     arr = draw_detections(arr, detections, label_font)
                 stats.showing, stats.detections = 'camera', len(detections)
             else:
-                # 吹き出しは face 表示のときのみ（camera 表示中は表示時間だけが進む）
-                arr = bubble.apply(animator.frame(t, expression), t)
+                arr = animator.frame(t, expression)
                 stats.showing, stats.detections = 'face', 0
             lcd.push_rgb(arr)
             stats.tick(t)
@@ -160,7 +158,7 @@ def main() -> None:
                         default='auto',
                         help='face モードの表情 (既定: auto = 瞬き＋アイドル表情サイクル)')
     parser.add_argument('--socket-path', default='/tmp/show_face.sock',
-                        help='吹き出し通知用 Unix ソケットパス (既定: /tmp/show_face.sock)')
+                        help='トレンド監視の通知を受ける Unix ソケットパス (既定: /tmp/show_face.sock)')
     parser.add_argument('--control-port', type=int, default=8083,
                         help='ハブからの接続を受けるポート。0 で開かない (既定: 8083)')
     args = parser.parse_args()

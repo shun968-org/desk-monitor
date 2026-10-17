@@ -27,17 +27,17 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
 ソースは `src/desk_monitor/` パッケージ。systemd からは `PYTHONPATH=src` で `python -m desk_monitor.<module>` として起動する。
 
 - `display.py`(pi_a): 表示プロセスのエントリポイント。GC9A01(240x240)に表情アニメーションまたはカメラ映像を表示する。
-  モード切替は SIGUSR1(face)/ SIGUSR2(camera)か、ハブのダッシュボードから
+  モード切替は SIGUSR1(face)/ SIGUSR2(camera)か、ハブのダッシュボードから(テスト通知の機能はない)
   - `remote_camera.py`(pi_b の MJPEG を受ける)、`camera.py`(この Pi に直接付けたカメラ。`to_lcd` で全視野の中央を切り出す)、
     `control.py`(ハブからの検出結果・操作を受ける制御口 8083)、`lcd.py`(GC9A01 ドライバ)、`face.py`(表情)、
-    `bubble.py`(吹き出しと通知用 Unix ソケット)、`fonts.py`、`paths.py`、`sysstat.py`(温度・CPU)
+    `notification.py`(トレンド監視の通知を受ける Unix ソケット。LCD には出さずハブに中継する)、`fonts.py`、`paths.py`、`sysstat.py`(温度・CPU)
 - `camera_server.py`(pi_b): ハードウェアエンコーダで H.264 / MJPEG を作り、ポート 8082 で配る。picamera2 は apt、venv は使わない。
   映像の向きは `--vflip` / `--hflip`
 - `hub.py`(開発 PC): H.264 を復号(PyAV)して推論し(`detector.py`、ONNX Runtime)、結果を pi_a に送る。
   ダッシュボードは 127.0.0.1 だけで待ち受け、履歴は `~/.local/share/desk-monitor/hub.sqlite3`。
   モデルは YOLO11m(入力 640、`models/yolo11m.onnx`、git 管理外)。`scripts/export_yolo.sh` で作り、`DESK_MONITOR_MODEL` で切り替えられる
   (開発 PC の CPU 4 スレッドで n 49ms / s 103ms / m 273ms / l 339ms。精度と頻度の兼ね合いで m)
-- `trend.py`(pi_a): Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセスに吹き出し通知を送る。
+- `trend.py`(pi_a): Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセス経由でハブに通知を送る(ダッシュボードにトースト表示。円形 LCD には出さない)。
   設定は `config/trend_config.json`
 - `wire.py`: 機器間の通信(JSON ヘッダ + ペイロード、hello でトークン認証)
 - `tools/show_camera.py` / `tools/show_image.py`: カメラ・画像表示の単発ユーティリティ(表示サービスを止めてから使う)

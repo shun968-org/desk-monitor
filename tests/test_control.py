@@ -23,14 +23,12 @@ def test_overlay_converts_to_pixels_and_expires():
 
 class Recorder:
     def __init__(self) -> None:
-        self.modes, self.bubbles = [], []
+        self.modes = []
         self.overlay = control.DetectionOverlay()
 
     def control(self) -> control.DisplayControl:
         return control.DisplayControl(
-            lambda: {'mode': 'face', 'showing': 'face'}, self.modes.append,
-            lambda text, source, duration: self.bubbles.append((text, source, duration)),
-            self.overlay)
+            lambda: {'mode': 'face', 'showing': 'face'}, self.modes.append, self.overlay)
 
 
 def test_handle_commands():
@@ -38,13 +36,11 @@ def test_handle_commands():
     ctl = rec.control()
     ctl.handle({'type': 'mode', 'mode': 'camera'})
     ctl.handle({'type': 'mode', 'mode': 'other'})
-    ctl.handle({'type': 'bubble', 'text': 'x' * 300, 'source': 'test', 'duration': 'bad'})
-    ctl.handle({'type': 'bubble', 'text': 123})
+    ctl.handle({'type': 'bubble', 'text': 'テスト通知は受け付けない'})
     ctl.handle({'type': 'detections', 'items': [
         {'x1': 0, 'y1': 0, 'x2': 1, 'y2': 1, 'score': 0.5, 'cls': 0}]})
     ctl.handle({'type': 'unknown'})
     assert rec.modes == ['camera']
-    assert rec.bubbles == [('x' * 200, 'test', 10.0)]
     assert len(rec.overlay.latest(10, 10)) == 1
 
 
@@ -71,10 +67,10 @@ def test_hub_session(server, monkeypatch):
         wire.send(sock, {'type': 'mode', 'mode': 'camera'})
         assert wait_until(lambda: rec.modes == ['camera'])
 
-        ctl.notify_bubble('地震', 'bluesky', 12)
-        while (msg := reader.read()[0])['type'] != 'bubble':
+        ctl.notify('地震', 'bluesky')
+        while (msg := reader.read()[0])['type'] != 'notification':
             pass
-        assert (msg['text'], msg['source'], msg['duration']) == ('地震', 'bluesky', 12)
+        assert (msg['text'], msg['source']) == ('地震', 'bluesky')
 
 
 def test_rejects_wrong_token(server):

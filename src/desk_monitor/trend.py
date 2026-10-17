@@ -1,10 +1,11 @@
 """トレンド監視デーモン。
 
 Bluesky Jetstream と Google Trends + RSS の 2 経路でキーワードの急増を検知し、
-表示プロセス(display.py)の Unix ドメインソケット経由で吹き出し通知を送る。
+表示プロセス(display.py)の Unix ドメインソケット経由で通知を送る。
 
-通信プロトコル (display.py との Unix socket — 改行区切り JSON。bubble.py が受ける):
-  {"cmd": "bubble", "text": "...", "source": "bluesky"|"trends_rss", "duration": 12}
+通信プロトコル (display.py との Unix socket — 改行区切り JSON。notification.py が受ける):
+  {"cmd": "notify", "text": "...", "source": "bluesky"|"trends_rss"}
+通知は円形 LCD には出さず、表示プロセスがハブに中継してダッシュボードにトースト表示する。
 
 設定ファイル: config/trend_config.json
 
@@ -36,11 +37,10 @@ def _load_config() -> dict:
         return json.load(f)
 
 
-def _notify(sock_path: str, text: str, source: str, duration: int) -> None:
+def _notify(sock_path: str, text: str, source: str) -> None:
     """表示プロセスの Unix ソケットに JSON 1 行を送る。接続失敗は警告のみ。"""
     payload = (
-        json.dumps({'cmd': 'bubble', 'text': text, 'source': source,
-                    'duration': duration}, ensure_ascii=False)
+        json.dumps({'cmd': 'notify', 'text': text, 'source': source}, ensure_ascii=False)
         + '\n'
     )
     try:
@@ -125,7 +125,6 @@ async def _bluesky_task(cfg: dict, cooldown: _Cooldown) -> None:
     window: float = bc['window_seconds']
     threshold: int = bc['threshold']
     sock_path: str = cfg['socket_path']
-    duration: int = cfg['bubble_duration_seconds']
     url: str = bc['url']
 
     counter = _BurstCounter(keywords, window, threshold)
@@ -142,7 +141,7 @@ async def _bluesky_task(cfg: dict, cooldown: _Cooldown) -> None:
                         if cooldown.try_acquire(kw, 'bluesky'):
                             msg = f'「{kw}」が多数投稿されています（{count}件/{int(window)}秒）'
                             log.info('[Bluesky] %s', msg)
-                            _notify(sock_path, msg, 'bluesky', duration)
+                            _notify(sock_path, msg, 'bluesky')
                             counter.reset(kw)
         except Exception as exc:
             log.warning('Bluesky エラー（30 秒後に再接続）: %s', exc)
@@ -154,7 +153,6 @@ async def _rss_trends_task(cfg: dict, cooldown: _Cooldown) -> None:
     rc = cfg['trends_rss']
     keywords: list[str] = cfg['keywords']
     sock_path: str = cfg['socket_path']
-    duration: int = cfg['bubble_duration_seconds']
     interval: float = rc['poll_interval_seconds']
     feeds: list[str] = rc['rss_feeds']
     item_window: float = rc['rss_item_window_minutes'] * 60
@@ -181,7 +179,7 @@ async def _rss_trends_task(cfg: dict, cooldown: _Cooldown) -> None:
                     if cooldown.try_acquire(kw, 'trends_rss'):
                         msg = f'「{kw}」がニュースに登場しています'
                         log.info('[RSS] %s (%s)', msg, feed_url)
-                        _notify(sock_path, msg, 'trends_rss', duration)
+                        _notify(sock_path, msg, 'trends_rss')
             except Exception as exc:
                 log.warning('RSS エラー (%s): %s', feed_url, exc)
 
@@ -200,7 +198,7 @@ async def _rss_trends_task(cfg: dict, cooldown: _Cooldown) -> None:
                             cooldown.try_acquire(kw, 'trends_rss'):
                         msg = f'「{kw}」が Google トレンドに登場しています'
                         log.info('[Trends] %s', msg)
-                        _notify(sock_path, msg, 'trends_rss', duration)
+                        _notify(sock_path, msg, 'trends_rss')
             except Exception as exc:
                 log.warning('Google Trends エラー: %s', exc)
 

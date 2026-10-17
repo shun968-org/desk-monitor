@@ -6,12 +6,24 @@ import subprocess
 from pathlib import Path
 
 _THERMAL = Path('/sys/class/thermal/thermal_zone0/temp')
+_HWMON = Path('/sys/class/hwmon')
+# CPU の温度を示すセンサー(Raspberry Pi、AMD、Intel)。thermal_zone0 は PC だと基板の温度のことがある
+_CPU_SENSORS = ('cpu_thermal', 'k10temp', 'coretemp')
 _MEMINFO = Path('/proc/meminfo')
 _UPTIME = Path('/proc/uptime')
 
 
 def read_temp() -> float | None:
-    """SoC の温度(°C)。読めなければ None。"""
+    """CPU(SoC)の温度(°C)。読めなければ None。"""
+    try:
+        for hwmon in sorted(_HWMON.iterdir()):
+            try:
+                if (hwmon / 'name').read_text().strip() in _CPU_SENSORS:
+                    return int((hwmon / 'temp1_input').read_text()) / 1000
+            except (OSError, ValueError):
+                continue
+    except OSError:
+        pass
     try:
         return int(_THERMAL.read_text()) / 1000
     except (OSError, ValueError):

@@ -2,7 +2,6 @@
   "keywords": ["地震", "速報", "台風", "津波", "原油", "イラク", "戦争", "crude oil", "Iraq", "war"],
   "socket_path": "/tmp/show_face.sock",
   "cooldown_seconds": 300,
-  "bubble_duration_seconds": 12,
   "bluesky": {
     "enabled": true,
     "url": "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post",

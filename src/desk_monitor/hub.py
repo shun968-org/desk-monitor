@@ -6,7 +6,7 @@
 
 - カメラ配信サーバから全視野の H.264 を受けて復号し(PyAV)、YOLO で毎フレーム推論する
 - 検出結果(全視野に対する 0〜1 の座標)を表示プロセスに送り、円形 LCD に枠を重ねさせる
-- 表示プロセスに操作(モード切替・テスト通知)を送り、状態と吹き出しの通知を受け取る
+- 表示プロセスに操作(モード切替)を送り、状態とトレンド監視の通知を受け取る
 - ダッシュボードに、検出枠つきの映像・各機器の状態・検出と通知の履歴・操作をまとめる
 - 履歴は SQLite(既定 ~/.local/share/desk-monitor/hub.sqlite3)に残す
 
@@ -40,7 +40,7 @@ from urllib.parse import parse_qs, urlsplit
 import numpy as np
 from PIL import Image
 
-from desk_monitor import wire
+from desk_monitor import sysstat, wire
 from desk_monitor.detector import (COCO_LABELS_JA, Detection, DetectionWorker, YoloDetector,
                                    draw_detections)
 from desk_monitor.fonts import get_font
@@ -182,6 +182,7 @@ class HubState:
             name: collections.deque(maxlen=METRICS_SEC) for name in ('camera', 'display', 'hub')}
         self.display: dict = {'connected': False}
         self.tracker = PresenceTracker(history.add_detection)
+        self._meter = sysstat.CpuMeter()
 
     def record(self, device: str, values: dict, now: float) -> None:
         """状態を推移として残す(ダッシュボードのグラフに使う)。"""
@@ -231,7 +232,10 @@ class HubState:
                 self.tracker.update([], now)
                 self.inference_fps = round(len([t for t in self._inferences if now - t < 5.0]) / 5.0, 1)
             fps, ms = self.inference_fps, self.inference_ms
-        self.record('hub', {'fps': fps, 'ms': round(ms, 1) if ms is not None else None}, now)
+        # ハブ自身(開発 PC)の状態。コンテナ内でも /proc と /sys はホストの値を返す
+        system = sysstat.snapshot(self._meter)
+        self.record('hub', {'cpu': system['cpu'], 'temp': system['temp'], 'memory': system['memory'],
+                            'fps': fps, 'ms': round(ms, 1) if ms is not None else None}, now)
 
     def annotated_jpeg(self, font) -> bytes | None:
         with self._lock:
@@ -370,7 +374,7 @@ class DisplayLink:
             self._state.display = {'connected': True,
                                    **{k: header.get(k) for k in ('display', 'system')}}
             self._state.record_display(header, time.time())
-        elif kind == 'bubble':
+        elif kind == 'notification':
             self._state.history.add_notification(
                 float(header.get('at') or time.time()), str(header.get('source', '')),
                 str(header.get('text', '')))
@@ -444,9 +448,6 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         link = self.server.display
         if url.path == '/api/mode' and body.get('mode') in ('face', 'camera'):
             ok = link.send({'type': 'mode', 'mode': body['mode']})
-        elif url.path == '/api/bubble' and isinstance(body.get('text'), str) and body['text'].strip():
-            ok = link.send({'type': 'bubble', 'text': body['text'].strip()[:200],
-                            'source': 'test', 'duration': 10})
         else:
             self.send_error(400)
             return
@@ -531,10 +532,15 @@ DASHBOARD_HTML = r"""<!doctype html>
   .side { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
   .kv { color: var(--muted); font-size: 12px; }
   .warn { color: var(--warn); }
-  /* 右の列の残りの高さを 4 つのグラフで分ける */
-  .charts { flex: 1; display: flex; flex-direction: column; gap: 8px; }
-  .charts canvas { flex: 1; min-height: 80px; width: 100%; background: #161616;
-                   border: 1px solid var(--line); border-radius: 6px; display: block; }
+  /* 右の列の残りの高さを、選んだ機器の 3 つのグラフで分ける */
+  .charts { flex: 1; display: flex; flex-direction: column; }
+  .device-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .device-tabs [role="tab"] { background: none; border: 0; border-bottom: 2px solid transparent;
+                              border-radius: 0; padding: 4px 10px; color: var(--muted); }
+  .device-tabs [role="tab"][aria-selected="true"] { color: var(--text); border-bottom-color: #42a5f5; }
+  .chart-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+  .chart-panel canvas { flex: 1; min-height: 80px; width: 100%; background: #161616;
+                        border: 1px solid var(--line); border-radius: 6px; display: block; }
   button { background: #333; color: var(--text); border: 1px solid #444; border-radius: 6px;
            padding: 4px 12px; cursor: pointer; }
   button[aria-pressed="true"] { background: #1565c0; border-color: #1e88e5; }
@@ -550,11 +556,17 @@ DASHBOARD_HTML = r"""<!doctype html>
   .toast.leaving { opacity: 0; transition: opacity .3s ease; }
   @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
   @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
-  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 92vw); z-index: 10;
-            background: var(--panel); border-left: 1px solid var(--line); box-shadow: -8px 0 24px #0008;
-            padding: 12px; display: flex; flex-direction: column; gap: 6px;
-            transform: translateX(100%); transition: transform .2s ease; visibility: hidden; }
-  .drawer.open { transform: none; visibility: visible; }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 88vw); z-index: 10;
+            background: var(--panel); border-left: 1px solid var(--line);
+            transform: translateX(100%); transition: transform .2s ease; }
+  .drawer.open { transform: none; box-shadow: -8px 0 24px #0008; }
+  .drawer-body { height: 100%; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .drawer-tab { position: absolute; top: 50%; right: 100%; transform: translateY(-50%);
+                writing-mode: vertical-rl; letter-spacing: .1em; padding: 14px 6px;
+                background: var(--panel); color: var(--text); border: 1px solid var(--line); border-right: 0;
+                border-radius: 8px 0 0 8px; box-shadow: -2px 0 8px #0006; }
+  .drawer-tab:hover, .drawer.open .drawer-tab { background: #263238; }
+  @media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
   .drawer-head { display: flex; align-items: center; justify-content: space-between; }
   .drawer-head h2 { margin: 0; }
   .scroll { flex: 1; min-height: 0; overflow: auto; }
@@ -567,7 +579,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     main { grid-template-columns: 1fr; }
     .video { flex: none; aspect-ratio: 4 / 3; max-height: 70vh; }
     .scroll { max-height: 50vh; }
-    .charts canvas { flex: none; height: 120px; }
+    .chart-panel canvas { flex: none; height: 120px; }
   }
 </style>
 </head>
@@ -575,7 +587,6 @@ DASHBOARD_HTML = r"""<!doctype html>
 <header>
   <h1>desk-monitor</h1>
   <span class="kv" id="clock"></span>
-  <button id="drawerOpen" style="margin-left:auto" aria-controls="drawer" aria-expanded="false">検出履歴</button>
 </header>
 <main>
   <section class="camera">
@@ -592,31 +603,37 @@ DASHBOARD_HTML = r"""<!doctype html>
         <button id="modeFace" data-mode="face">face</button>
         <button id="modeCamera" data-mode="camera">camera</button>
       </div>
-      <form id="bubbleForm">
-        <input id="bubbleText" maxlength="200" placeholder="テスト通知の文言" autocomplete="off">
-        <button>送信</button>
-      </form>
       <div class="kv" id="opMsg"></div>
     </section>
     <section class="charts">
-      <canvas id="chartTemp" aria-label="温度の推移"></canvas>
-      <canvas id="chartCpu" aria-label="CPU 使用率の推移"></canvas>
-      <canvas id="chartMem" aria-label="メモリ使用率の推移"></canvas>
-      <canvas id="chartFps" aria-label="fps の推移"></canvas>
+      <div class="device-tabs" role="tablist" aria-label="機器">
+        <button role="tab" id="tab-display" data-device="display" aria-selected="true" aria-controls="chartsPanel">pi_a(LCD)</button>
+        <button role="tab" id="tab-camera" data-device="camera" aria-selected="false" aria-controls="chartsPanel" tabindex="-1">pi_b(カメラ)</button>
+        <button role="tab" id="tab-hub" data-device="hub" aria-selected="false" aria-controls="chartsPanel" tabindex="-1">開発PC</button>
+      </div>
+      <div class="chart-panel" id="chartsPanel" role="tabpanel" aria-labelledby="tab-display">
+        <canvas id="chartTemp" aria-label="温度の推移"></canvas>
+        <canvas id="chartCpu" aria-label="CPU 使用率の推移"></canvas>
+        <canvas id="chartMem" aria-label="メモリ使用率の推移"></canvas>
+      </div>
     </section>
   </div>
 </main>
 <!-- 通知のトースト。読み上げはするがフォーカスは移さない(フォーカスを受け取る要素を置かない) -->
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <!-- サイドパネル(通常は閉じておき、ヘッダーのボタンで開く) -->
-<aside class="drawer" id="drawer" aria-hidden="true" aria-labelledby="drawerTitle">
-  <div class="drawer-head">
-    <h2 id="drawerTitle">検出履歴</h2>
-    <button id="drawerClose" aria-label="閉じる">×</button>
-  </div>
-  <div class="kv" id="counts"></div>
-  <div class="scroll">
-    <table id="detections"><thead><tr><th>種類</th><th>時刻</th><th>長さ</th><th>数</th><th>信頼度</th></tr></thead><tbody></tbody></table>
+<aside class="drawer" id="drawer" aria-labelledby="drawerTitle">
+  <!-- 画面の右端に出ているタブ。パネルの左端に付いていて、開くと一緒に動く -->
+  <button class="drawer-tab" id="drawerTab" aria-controls="drawerBody" aria-expanded="false">検出履歴</button>
+  <div class="drawer-body" id="drawerBody" inert>
+    <div class="drawer-head">
+      <h2 id="drawerTitle">検出履歴</h2>
+      <button id="drawerClose" aria-label="閉じる">×</button>
+    </div>
+    <div class="kv" id="counts"></div>
+    <div class="scroll">
+      <table id="detections"><thead><tr><th>種類</th><th>時刻</th><th>長さ</th><th>数</th><th>信頼度</th></tr></thead><tbody></tbody></table>
+    </div>
   </div>
 </aside>
 <script>
@@ -636,22 +653,23 @@ let metrics = { camera: [], display: [], hub: [] };
 
 // ─── 時系列グラフ(直近 10 分。時間軸は毎秒流す) ───
 const WINDOW_SEC = 600;
-const SERIES = {
-  // 右の列は狭いので短い名前にする(pi_a: 円形 LCD、pi_b: カメラ、ハブ: 推論)
-  camera: { label: 'pi_b', color: '#42a5f5' },
-  display: { label: 'pi_a', color: '#ffa726' },
-  hub: { label: 'ハブ', color: '#66bb6a' },
+// 機器ごとの色と温度の目安(Pi はスロットリングが始まる 80°C、開発 PC は Ryzen の上限に近い 95°C)
+const DEVICES = {
+  display: { color: '#ffa726', tempMax: 90, tempGuide: 80 },
+  camera: { color: '#42a5f5', tempMax: 90, tempGuide: 80 },
+  hub: { color: '#66bb6a', tempMax: 100, tempGuide: 95 },
 };
+let selectedDevice = 'display';
 const CHARTS = [
-  { id: 'chartTemp', title: '温度 °C', key: 'temp', devices: ['display', 'camera'], min: 40, max: 90, guide: 80 },
-  { id: 'chartCpu', title: 'CPU %', key: 'cpu', devices: ['display', 'camera'], min: 0, max: 100 },
-  { id: 'chartMem', title: 'メモリ %', key: 'memory', devices: ['display', 'camera'], min: 0, max: 100 },
-  { id: 'chartFps', title: 'fps', key: 'fps', devices: ['display', 'camera', 'hub'], min: 0, max: 35 },
+  { id: 'chartTemp', title: '温度 °C', key: 'temp', min: 40, digits: 1 },
+  { id: 'chartCpu', title: 'CPU %', key: 'cpu', min: 0, max: 100, digits: 0 },
+  { id: 'chartMem', title: 'メモリ %', key: 'memory', min: 0, max: 100, digits: 0 },
 ];
 
 function drawChart(chart, now) {
   const canvas = $(chart.id);
   if (!canvas) return;
+  const device = DEVICES[selectedDevice];
   const ratio = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
   if (!w || !h) return;
@@ -663,55 +681,51 @@ function drawChart(chart, now) {
   ctx.clearRect(0, 0, w, h);
   const left = 30, right = 6, top = 18, bottom = 14;
   const pw = w - left - right, ph = h - top - bottom;
+  const series = (metrics[selectedDevice] ?? []).filter((p) => p[chart.key] != null && now - p.t <= WINDOW_SEC + 5);
+  const guide = chart.key === 'temp' ? device.tempGuide : null;
   // 値が範囲を超えたら上限を広げる
-  let max = chart.max;
-  for (const d of chart.devices) for (const p of metrics[d] ?? []) if (p[chart.key] != null) max = Math.max(max, p[chart.key]);
+  let max = chart.key === 'temp' ? device.tempMax : chart.max;
+  for (const p of series) max = Math.max(max, p[chart.key]);
+  const min = Math.min(chart.min, ...series.map((p) => p[chart.key]));
   const x = (t) => left + (1 - (now - t) / WINDOW_SEC) * pw;
-  const y = (v) => top + ph - (Math.min(max, Math.max(chart.min, v)) - chart.min) / (max - chart.min) * ph;
+  const y = (v) => top + ph - (v - min) / (max - min) * ph;
 
   ctx.font = '10px system-ui, sans-serif';
   ctx.fillStyle = '#8a8a8a'; ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1;
   for (let i = 0; i <= 2; i++) {
-    const v = chart.min + (max - chart.min) * i / 2, yy = Math.round(y(v)) + 0.5;
+    const v = min + (max - min) * i / 2, yy = Math.round(y(v)) + 0.5;
     ctx.beginPath(); ctx.moveTo(left, yy); ctx.lineTo(left + pw, yy); ctx.stroke();
     ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(String(Math.round(v)), left - 4, yy);
   }
   ctx.textAlign = 'center'; ctx.textBaseline = 'top';
   for (const m of [10, 5, 0]) ctx.fillText(m ? `-${m}分` : '今', x(now - m * 60), top + ph + 2);
-  if (chart.guide != null) {
+  if (guide != null) {
     ctx.setLineDash([3, 3]); ctx.strokeStyle = '#ef535099';
-    ctx.beginPath(); ctx.moveTo(left, y(chart.guide)); ctx.lineTo(left + pw, y(chart.guide)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(left, y(guide)); ctx.lineTo(left + pw, y(guide)); ctx.stroke();
     ctx.setLineDash([]);
   }
 
+  // タイトルと最新値(目安を超えていたら赤)
+  const last = series.at(-1)?.[chart.key];
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
   ctx.fillStyle = '#ddd'; ctx.font = '600 11px system-ui, sans-serif';
   ctx.fillText(chart.title, 4, 3);
-  let legendX = 4 + ctx.measureText(chart.title).width + 10;
-  ctx.font = '10px system-ui, sans-serif';
-  for (const d of chart.devices) {
-    const series = (metrics[d] ?? []).filter((p) => p[chart.key] != null && now - p.t <= WINDOW_SEC + 5);
-    const last = series.at(-1);
-    const label = `${SERIES[d].label} ${last ? Number(last[chart.key]).toFixed(chart.key === 'temp' ? 1 : 0) : '–'}`;
-    ctx.fillStyle = SERIES[d].color;
-    ctx.fillRect(legendX, 7, 8, 2);
-    ctx.fillText(label, legendX + 11, 3);
-    legendX += 11 + ctx.measureText(label).width + 10;
+  const titleW = ctx.measureText(chart.title).width;
+  ctx.fillStyle = last != null && guide != null && last >= guide ? '#ef5350' : device.color;
+  ctx.fillText(last == null ? '–' : Number(last).toFixed(chart.digits), 4 + titleW + 8, 3);
 
-    ctx.save();
-    ctx.beginPath(); ctx.rect(left, top, pw, ph); ctx.clip();
-    ctx.strokeStyle = SERIES[d].color; ctx.lineWidth = 1.5; ctx.beginPath();
-    let prev = null;
-    for (const p of series) {
-      // 6 秒以上途切れたら(切断など)線をつながない
-      if (prev && p.t - prev.t > 6) ctx.moveTo(x(p.t), y(p[chart.key]));
-      else if (prev) ctx.lineTo(x(p.t), y(p[chart.key]));
-      else ctx.moveTo(x(p.t), y(p[chart.key]));
-      prev = p;
-    }
-    ctx.stroke();
-    ctx.restore();
+  ctx.save();
+  ctx.beginPath(); ctx.rect(left, top, pw, ph); ctx.clip();
+  ctx.strokeStyle = device.color; ctx.lineWidth = 1.5; ctx.beginPath();
+  let prev = null;
+  for (const p of series) {
+    // 6 秒以上途切れたら(切断など)線をつながない
+    if (!prev || p.t - prev.t > 6) ctx.moveTo(x(p.t), y(p[chart.key]));
+    else ctx.lineTo(x(p.t), y(p[chart.key]));
+    prev = p;
   }
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawCharts() {
@@ -757,11 +771,6 @@ async function post(path, body) {
   return res.ok;
 }
 for (const b of document.querySelectorAll('[data-mode]')) b.addEventListener('click', () => post('/api/mode', { mode: b.dataset.mode }).then(refreshState));
-$('bubbleForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const text = $('bubbleText').value.trim();
-  if (text && await post('/api/bubble', { text })) $('bubbleText').value = '';
-});
 
 // ─── 通知のトースト ───
 const TOAST_SEC = 8, MAX_TOASTS = 4;
@@ -797,13 +806,35 @@ async function pollNotifications() {
 
 function setDrawer(open) {
   $('drawer').classList.toggle('open', open);
-  $('drawer').setAttribute('aria-hidden', String(!open));
-  $('drawerOpen').setAttribute('aria-expanded', String(open));
+  $('drawerBody').inert = !open;  // 閉じている間は中身にフォーカスが入らないようにする
+  $('drawerTab').setAttribute('aria-expanded', String(open));
   if (open) refreshHistory();
 }
-$('drawerOpen').addEventListener('click', () => setDrawer(!$('drawer').classList.contains('open')));
-$('drawerClose').addEventListener('click', () => setDrawer(false));
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
+$('drawerTab').addEventListener('click', () => setDrawer(!$('drawer').classList.contains('open')));
+$('drawerClose').addEventListener('click', () => { setDrawer(false); $('drawerTab').focus(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('drawer').classList.contains('open')) { setDrawer(false); $('drawerTab').focus(); } });
+
+// 機器のタブ(左右の矢印キーでも切り替える)
+const deviceTabs = [...document.querySelectorAll('[role="tab"][data-device]')];
+function selectDevice(tab) {
+  for (const t of deviceTabs) {
+    const selected = t === tab;
+    t.setAttribute('aria-selected', String(selected));
+    t.tabIndex = selected ? 0 : -1;
+  }
+  selectedDevice = tab.dataset.device;
+  $('chartsPanel').setAttribute('aria-labelledby', tab.id);
+  drawCharts();
+}
+for (const tab of deviceTabs) {
+  tab.addEventListener('click', () => selectDevice(tab));
+  tab.addEventListener('keydown', (e) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (!step) return;
+    const next = deviceTabs[(deviceTabs.indexOf(tab) + step + deviceTabs.length) % deviceTabs.length];
+    next.focus(); selectDevice(next);
+  });
+}
 
 async function refreshMetrics() {
   try { metrics = await (await fetch('/api/metrics', { cache: 'no-store' })).json(); } catch (e) { /* 次の周期で */ }

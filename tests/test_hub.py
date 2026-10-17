@@ -80,7 +80,7 @@ def test_display_link_sends_normalized_detections():
 
     link._handle({'type': 'status', 'display': {'mode': 'face'}, 'system': {'temp': 50}})
     assert state.display['display'] == {'mode': 'face'}
-    link._handle({'type': 'bubble', 'text': '台風', 'source': 'trends_rss', 'at': 10.0})
+    link._handle({'type': 'notification', 'text': '台風', 'source': 'trends_rss', 'at': 10.0})
     assert state.history.recent()['notifications'][0]['text'] == '台風'
 
 
@@ -156,12 +156,11 @@ def test_dashboard_post_requires_custom_header(dashboard):
     assert _request(addr, 'POST', '/api/mode', {'mode': 'face'}, hdr)[0] == 503
     state.display = {'connected': True}
     assert _request(addr, 'POST', '/api/mode', {'mode': 'face'}, hdr)[0] == 200
-    assert _request(addr, 'POST', '/api/bubble', {'text': ' テスト '}, hdr)[0] == 200
     assert _request(addr, 'POST', '/api/mode', {'mode': 'x'}, hdr)[0] == 400
-    assert _request(addr, 'POST', '/api/bubble', {'text': ''}, hdr)[0] == 400
-    sent = [link._outbox.get_nowait() for _ in range(2)]
-    assert sent == [{'type': 'mode', 'mode': 'face'},
-                    {'type': 'bubble', 'text': 'テスト', 'source': 'test', 'duration': 10}]
+    # テスト通知の API はない
+    assert _request(addr, 'POST', '/api/bubble', {'text': 'テスト'}, hdr)[0] == 400
+    assert link._outbox.get_nowait() == {'type': 'mode', 'mode': 'face'}
+    assert link._outbox.empty()
 
 
 def test_dashboard_stream(dashboard):
@@ -195,7 +194,8 @@ def test_metrics_record_device_samples():
     assert m['camera'][0] == {'t': 100.0, 'cpu': 8.0, 'temp': 64.5, 'memory': 20.0, 'fps': 20.5}
     assert m['camera'][1]['cpu'] is None
     assert m['display'][0]['fps'] == 24.0
-    assert m['hub'][0] == {'t': 103.0, 'fps': 0.0, 'ms': None}
+    assert {k: m['hub'][0][k] for k in ('t', 'fps', 'ms')} == {'t': 103.0, 'fps': 0.0, 'ms': None}
+    assert {'cpu', 'temp', 'memory'} <= set(m['hub'][0])  # 開発 PC 自身の状態も残す
     # 古いものから捨てる
     state.record('hub', {'fps': 1}, 103.0 + hub.METRICS_SEC + 1)
     assert [p['t'] for p in state.metrics_snapshot()['hub']] == [103.0 + hub.METRICS_SEC + 1]

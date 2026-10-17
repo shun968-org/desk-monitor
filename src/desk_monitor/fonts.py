@@ -1,4 +1,4 @@
-"""吹き出し・検出ラベルの描画に使う日本語フォント。"""
+"""検出ラベルの描画に使う日本語フォント。"""
 from __future__ import annotations
 
 from pathlib import Path

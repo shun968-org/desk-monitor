@@ -7,10 +7,9 @@
     {"type": "detections", "items": [{"x1", "y1", "x2", "y2", "score", "cls"}, ...]}
         座標は全視野に対する 0〜1。DETECTION_STALE_SEC 届かなければ枠を消す
     {"type": "mode", "mode": "face" | "camera"}
-    {"type": "bubble", "text": ..., "source": ..., "duration": 秒}   テスト通知
   表示 → ハブ
     {"type": "status", "display": {...}, "system": {...}}   約 2 秒ごと
-    {"type": "bubble", "text", "source", "duration", "at"}  吹き出しを出したとき(トレンド通知を含む)
+    {"type": "notification", "text", "source", "at"}        トレンド監視の通知を受けたとき(notification.py)
 """
 from __future__ import annotations
 
@@ -64,11 +63,9 @@ class DisplayControl:
     """制御口が表示プロセスを操作するための窓口。"""
 
     def __init__(self, get_status: Callable[[], dict], set_mode: Callable[[str], None],
-                 show_bubble: Callable[[str, str, float], None],
                  overlay: DetectionOverlay) -> None:
         self.get_status = get_status
         self.set_mode = set_mode
-        self.show_bubble = show_bubble
         self.overlay = overlay
         self._meter = sysstat.CpuMeter()
         self._lock = threading.Lock()
@@ -87,10 +84,10 @@ class DisplayControl:
             if send in self._subscribers:
                 self._subscribers.remove(send)
 
-    def notify_bubble(self, text: str, source: str, duration: float) -> None:
-        """吹き出しを出したことを、接続中のハブに知らせる。"""
-        message = wire.encode({'type': 'bubble', 'text': text, 'source': source,
-                               'duration': duration, 'at': time.time()})
+    def notify(self, text: str, source: str) -> None:
+        """トレンド監視の通知を、接続中のハブに中継する。"""
+        message = wire.encode({'type': 'notification', 'text': text, 'source': source,
+                               'at': time.time()})
         with self._lock:
             subscribers = list(self._subscribers)
         for send in subscribers:
@@ -102,12 +99,6 @@ class DisplayControl:
             self.overlay.update(header.get('items'))
         elif kind == 'mode' and header.get('mode') in ('face', 'camera'):
             self.set_mode(header['mode'])
-        elif kind == 'bubble' and isinstance(header.get('text'), str):
-            try:
-                duration = float(header.get('duration', 10))
-            except (TypeError, ValueError):
-                duration = 10.0
-            self.show_bubble(header['text'][:200], str(header.get('source', 'test')), duration)
 
 
 class _Handler(socketserver.BaseRequestHandler):
