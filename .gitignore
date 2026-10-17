@@ -33,3 +33,8 @@ node_modules/
 # 物体検出モデル(scripts/export_yolo.sh で生成する)
 models/*.onnx
 models/*.pt
+
+# テスト・カバレッジ
+.pytest_cache/
+.coverage
+coverage.xml

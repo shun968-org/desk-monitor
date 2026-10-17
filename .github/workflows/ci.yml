@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ハードウェアに依存しない単体テスト(Pi 専用パッケージはテスト側で偽モジュールに置き換える)
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"  # Pi と同じ系列
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - run: python -m pytest --cov --cov-report=xml --cov-report=term
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+
+  sonarcloud:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage
+
+      # SONAR_TOKEN 未設定(フォークPR等)の場合はスキャンせず成功扱いにする
+      - name: SonarCloud Scan
+        if: ${{ env.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@v5
+        with:
+          args: >
+            -Dsonar.organization=shun968-org
+            -Dsonar.projectKey=shun968-org_desk-monitor
+            -Dsonar.sources=.
+            -Dsonar.tests=tests
+            -Dsonar.exclusions=node_modules/**,assets/**,tests/**,**/*.png
+            -Dsonar.python.version=3.13
+            -Dsonar.python.coverage.reportPaths=coverage.xml

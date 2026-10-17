@@ -1,0 +1,12 @@
+# パッケージとしては配布しない(Pi へは scripts/deploy.sh で src/ ごと配置する)。
+# ここではテストとカバレッジの設定だけを持つ。
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["src/desk_monitor"]
+branch = true
+relative_files = true
