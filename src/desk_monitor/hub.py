@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sqlite3
 import sys
 import threading
@@ -44,6 +45,7 @@ from PIL import Image
 
 from desk_monitor import sysstat, wire
 from desk_monitor.ar import CameraConfig, PoiStore
+from desk_monitor.layers import MapLayers
 from desk_monitor.detector import Detection, DetectionWorker, draw_detections, load_detector
 from desk_monitor.fonts import get_font
 from desk_monitor.paths import MODELS_DIR
@@ -421,6 +423,7 @@ class DisplayLink:
 # ─── ダッシュボード ────────────────────────────────────────────────────────
 
 _ALLOWED_HOSTS = {'127.0.0.1', 'localhost', '[::1]'}
+_DEM_TILE = re.compile(r'^/tiles/dem/(\d{1,2})/(\d{1,6})/(\d{1,6})\.png$')
 
 
 class _DashboardHandler(BaseHTTPRequestHandler):
@@ -448,6 +451,10 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             except ValueError:
                 since = 0.0
             self._json({'notifications': self.server.state.history.notifications_since(since)})
+        elif url.path.startswith('/tiles/dem/'):
+            self._dem_tile(url.path)
+        elif url.path.startswith('/api/layers/'):
+            self._layer(url.path)
         elif url.path == '/api/ar':
             ar = self.server.ar
             self._json(ar.snapshot() if ar is not None else {'camera': None, 'pois': []})
@@ -494,6 +501,47 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json({'ok': ok}, 200 if ok else 503)
 
+    def _dem_tile(self, path: str) -> None:
+        """地理院の標高タイルを中継する(ブラウザで等高線を描くため)。"""
+        layers, match = self.server.layers, _DEM_TILE.match(path)
+        if layers is None or match is None:
+            self.send_error(404)
+            return
+        try:
+            tile = layers.dem.get(*map(int, match.groups()))
+        except ValueError:
+            self.send_error(400)
+            return
+        except OSError:
+            self.send_error(502)
+            return
+        if tile is None:
+            self.send_error(404)  # 海など、標高のない所
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/png')
+        self.send_header('Content-Length', str(len(tile)))
+        self.send_header('Cache-Control', 'max-age=86400')
+        self.end_headers()
+        self.wfile.write(tile)
+
+    def _layer(self, path: str) -> None:
+        layers = self.server.layers
+        if layers is None:
+            self.send_error(404)
+            return
+        name = path.rsplit('/', 1)[-1]
+        if name == 'boundaries':
+            self._json({'lines': layers.boundaries.data.get('lines', []), 'error': layers.boundaries.error})
+        elif name == 'amedas':
+            self._json({**layers.amedas.data, 'error': layers.amedas.error})
+        elif name == 'nowcast':
+            self._json({'latest': layers.nowcast.get()})
+        elif name == 'attribution':
+            self._json(MapLayers.ATTRIBUTION)
+        else:
+            self.send_error(404)
+
     def _send(self, code: int, content_type: str, body: bytes) -> None:
         self.send_response(code)
         self.send_header('Content-Type', content_type)
@@ -537,10 +585,11 @@ class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, addr: tuple[str, int], state: HubState, display: DisplayLink,
-                 ar: PoiStore | None = None) -> None:
+                 ar: PoiStore | None = None, layers: MapLayers | None = None) -> None:
         self.state = state
         self.display = display
         self.ar = ar
+        self.layers = layers
         self._fonts: dict[int, object] = {}
         super().__init__(addr, _DashboardHandler)
 
@@ -593,6 +642,18 @@ DASHBOARD_HTML = r"""<!doctype html>
          isolation: isolate; }
   #arInfo { margin-top: 4px; }
   #arOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  /* 地図のレイヤの操作パネル(Leaflet のコントロール) */
+  .layer-control { background: #1b1b1bee; color: var(--text); border: 1px solid #ffffff26; border-radius: 8px;
+                   box-shadow: 0 4px 14px #0008; font: 12px/1.5 system-ui, sans-serif; }
+  .layer-button { background: none; border: 0; color: var(--text); padding: 4px 10px; cursor: pointer; }
+  .layer-panel { padding: 4px 10px 8px; max-height: 260px; overflow: auto; border-top: 1px solid #ffffff1a; }
+  .layer-panel[hidden] { display: none; }
+  .layer-tree, .layer-tree ul { list-style: none; margin: 0; padding: 0; }
+  .layer-tree ul { padding-left: 18px; }
+  .layer-tree label { display: flex; gap: 6px; align-items: center; cursor: pointer; white-space: nowrap; }
+  .layer-group { font-weight: 600; margin-top: 4px; }
+  .temp-icon span { display: inline-block; transform: translate(-50%, -50%); color: #fff; font: 600 11px system-ui, sans-serif;
+                    padding: 1px 4px; border-radius: 4px; box-shadow: 0 1px 3px #0008; white-space: nowrap; }
   .gizmo { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; align-items: center;
            gap: 2px; z-index: 2; }
   .gizmo[hidden] { display: none; }
@@ -1258,15 +1319,9 @@ function drawMap() {
     return;
   }
   const c = ar.camera;
-  if (!map) {
-    map = L.map('map', { zoomControl: true, attributionControl: true });
-    L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
-      maxZoom: 18,
-      attribution: `<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">${ar.attribution.tiles}</a> | ${ar.attribution.pois}`,
-    }).addTo(map);
-    map.layers = L.layerGroup().addTo(map);
-  }
-  map.layers.clearLayers();
+  if (!map) initMap();
+  map.sectorLayer.clearLayers();
+  map.poiLayer.clearLayers();
   // 扇形(内側を切り欠いた形): 画角の左端〜右端、開始〜終了の距離
   const inner = view.min_distance_km * 1000, outer = view.max_distance_km * 1000;
   const from = view.heading - c.hfov / 2, n = 32, outerArc = [], innerArc = [];
@@ -1276,20 +1331,274 @@ function drawMap() {
     innerArc.push(inner > 0 ? destination(c.lat, c.lon, b, inner) : [c.lat, c.lon]);
   }
   const sector = L.polygon([...outerArc, ...innerArc.reverse()], { color: '#ffa726', weight: 1.5, fillOpacity: 0.12 });
-  map.layers.addLayer(sector);
+  map.sectorLayer.addLayer(sector);
   L.circleMarker([c.lat, c.lon], { radius: 6, color: '#fff', weight: 2, fillColor: '#1e88e5', fillOpacity: 1 })
-    .bindTooltip('設置場所').addTo(map.layers);
+    .bindTooltip('設置場所').addTo(map.sectorLayer);
   const shown = new Set(visiblePois().map((p) => p.name));
   for (const p of ar.pois) {
     const isShown = shown.has(p.name);
     L.circleMarker([p.lat, p.lon], {
       radius: isShown ? 6 : 3, weight: 1, color: '#000',
       fillColor: isShown ? '#ff7043' : '#9e9e9e', fillOpacity: isShown ? 0.95 : 0.5,
-    }).bindTooltip(`${p.name}(${p.kind}、${fmtKm(p.distance_m)})`).addTo(map.layers);
+    }).bindTooltip(`${p.name}(${p.kind}、${fmtKm(p.distance_m)})`).addTo(map.poiLayer);
   }
   if (!map.fitted) { map.fitBounds(sector.getBounds(), { padding: [10, 10] }); map.fitted = true; }
   $('arInfo').textContent = `表示中 ${shown.size} 件 / 周辺 ${ar.pois.length} 件`
     + (ar.error ? '(データの取得に失敗、保存済みのデータを表示)' : '');
+}
+
+// ─── 地図のレイヤ(ツリーのチェックボックスで選ぶ) ───
+const GSI = (name, ext = 'png') => `https://cyberjapandata.gsi.go.jp/xyz/${name}/{z}/{x}/{y}.${ext}`;
+const ATTR = {
+  gsi: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>',
+  osm: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+  jma: '<a href="https://www.jma.go.jp/" target="_blank" rel="noopener">気象庁</a>',
+};
+// radio: 子のうち 1 つだけを選ぶ(背景の地図)
+const LAYER_TREE = [
+  { id: 'base', label: '背景の地図', radio: true, children: [
+    { id: 'base-std', label: '標準地図' }, { id: 'base-pale', label: '淡色地図' }, { id: 'base-photo', label: '航空写真' }] },
+  { id: 'tourism', label: '観光', children: [
+    { id: 'ar-pois', label: '観光地' }, { id: 'ar-sector', label: '表示範囲(扇形)' }] },
+  { id: 'terrain', label: '地形', children: [
+    { id: 'contour', label: '等高線' }, { id: 'hillshade', label: '陰影起伏' }, { id: 'relief', label: '色別標高' }] },
+  { id: 'boundary', label: '境界', children: [
+    { id: 'pref', label: '都道府県境' }, { id: 'city', label: '市区町村境' }] },
+  { id: 'population', label: '人口', children: [{ id: 'did', label: '人口集中地区(2020 年)' }] },
+  { id: 'weather', label: '気象', children: [
+    { id: 'temp', label: '気温(アメダス)' }, { id: 'rain', label: '雨雲(降水ナウキャスト)' }] },
+];
+const DEFAULT_LAYERS = ['base-std', 'ar-pois', 'ar-sector'];
+const LAYER_KEY = 'desk-monitor.map-layers';
+
+function loadLayerChoice() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYER_KEY));
+    if (Array.isArray(saved)) return new Set(saved);
+  } catch (e) { /* 保存できない環境では既定のまま */ }
+  return new Set(DEFAULT_LAYERS);
+}
+function saveLayerChoice(ids) {
+  try { localStorage.setItem(LAYER_KEY, JSON.stringify([...ids])); } catch (e) { /* 保存できなくても動かす */ }
+}
+
+// 地理院の標高タイル(ハブが中継)から等高線を描く。標高が 0.01m 単位で RGB に入っている
+const CONTOUR_INTERVAL = { 9: 200, 10: 100, 11: 50, 12: 20, 13: 10, 14: 10 };
+const ContourLayer = typeof L === 'undefined' ? null : L.GridLayer.extend({
+  createTile(coords, done) {
+    const tile = document.createElement('canvas');
+    tile.width = tile.height = 256;
+    fetch(`/tiles/dem/${coords.z}/${coords.x}/${coords.y}.png`)
+      .then((res) => (res.ok ? res.blob() : null))
+      .then((blob) => (blob ? createImageBitmap(blob) : null))
+      .then((bitmap) => {
+        if (bitmap) drawContours(tile, bitmap, CONTOUR_INTERVAL[coords.z] ?? 10);
+        done(null, tile);
+      })
+      .catch((e) => done(e, tile));
+    return tile;
+  },
+});
+
+function drawContours(tile, bitmap, interval) {
+  const work = document.createElement('canvas');
+  work.width = work.height = 256;
+  const wctx = work.getContext('2d');
+  wctx.drawImage(bitmap, 0, 0);
+  const px = wctx.getImageData(0, 0, 256, 256).data;
+  const h = new Float32Array(256 * 256);
+  for (let i = 0; i < h.length; i++) {
+    const v = px[i * 4] * 65536 + px[i * 4 + 1] * 256 + px[i * 4 + 2];
+    h[i] = v === 8388608 ? NaN : (v < 8388608 ? v : v - 16777216) * 0.01;
+  }
+  const ctx = tile.getContext('2d'), step = 2;
+  const at = (x, y) => h[Math.min(255, y) * 256 + Math.min(255, x)];
+  const paths = { minor: new Path2D(), major: new Path2D() };
+  // マーチングスクエア: 2 画素ごとの格子で、各等高線が格子の辺を横切る点を結ぶ
+  for (let y = 0; y < 255; y += step) {
+    for (let x = 0; x < 255; x += step) {
+      const a = at(x, y), b = at(x + step, y), c = at(x + step, y + step), d = at(x, y + step);
+      if (Number.isNaN(a + b + c + d)) continue;
+      const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d);
+      for (let level = Math.ceil(lo / interval) * interval; level < hi; level += interval) {
+        const pts = [];
+        const edge = (v1, v2, x1, y1, x2, y2) => {
+          if ((v1 < level) === (v2 < level)) return;
+          const t = (level - v1) / (v2 - v1);
+          pts.push([x1 + (x2 - x1) * t, y1 + (y2 - y1) * t]);
+        };
+        edge(a, b, x, y, x + step, y); edge(b, c, x + step, y, x + step, y + step);
+        edge(d, c, x, y + step, x + step, y + step); edge(a, d, x, y, x, y + step);
+        const path = Math.round(level / interval) % 5 === 0 ? paths.major : paths.minor;
+        for (let i = 0; i + 1 < pts.length; i += 2) {
+          path.moveTo(pts[i][0], pts[i][1]); path.lineTo(pts[i + 1][0], pts[i + 1][1]);
+        }
+      }
+    }
+  }
+  ctx.strokeStyle = '#8d5a3c'; ctx.globalAlpha = 0.55; ctx.lineWidth = 0.8; ctx.stroke(paths.minor);
+  ctx.globalAlpha = 0.85; ctx.lineWidth = 1.6; ctx.stroke(paths.major);
+}
+
+// 気温の色(10°C 未満は青系、30°C 以上は赤系)
+function tempColor(t) {
+  const k = Math.max(0, Math.min(1, (t + 5) / 40));
+  return `hsl(${Math.round(240 - 240 * k)}, 75%, 45%)`;
+}
+
+const layerData = {};  // 境界・気温など、ハブから取ったデータ
+async function loadJson(url) { const res = await fetch(url, { cache: 'no-store' }); return res.ok ? res.json() : null; }
+
+async function fillBoundaries(group, level) {
+  layerData.boundaries ??= await loadJson('/api/layers/boundaries');
+  group.clearLayers();
+  for (const line of layerData.boundaries?.lines ?? []) {
+    if (line.level !== level) continue;
+    L.polyline(line.points, level === 4
+      ? { color: '#7e57c2', weight: 3, opacity: 0.85, dashArray: '8 4' }
+      : { color: '#9575cd', weight: 1.4, opacity: 0.8 }).bindTooltip(line.name).addTo(group);
+  }
+}
+
+async function fillTemps(group) {
+  const data = await loadJson('/api/layers/amedas');
+  group.clearLayers();
+  for (const s of data?.stations ?? []) {
+    if (s.temp == null) continue;
+    const icon = L.divIcon({ className: 'temp-icon', iconSize: null,
+      html: `<span style="background:${tempColor(s.temp)}">${s.temp.toFixed(1)}°</span>` });
+    const detail = [s.humidity != null ? `湿度 ${s.humidity}%` : '', s.wind != null ? `風速 ${s.wind}m/s` : '',
+                    s.precip1h != null ? `1 時間降水量 ${s.precip1h}mm` : ''].filter(Boolean).join('、');
+    L.marker([s.lat, s.lon], { icon, keyboard: false })
+      .bindTooltip(`${s.name}(${data.time?.slice(11, 16) ?? ''} 現在)${detail ? '<br>' + detail : ''}`).addTo(group);
+  }
+}
+
+async function rainUrl() {
+  const data = await loadJson('/api/layers/nowcast');
+  const t = data?.latest;
+  return t ? `https://www.jma.go.jp/bosai/jmatile/data/nowc/${t.basetime}/none/${t.validtime}/surf/hrpns/{z}/{x}/{y}.png` : null;
+}
+
+// レイヤの id → Leaflet のレイヤ(必要になったときに作る)
+const LAYER_FACTORY = {
+  'base-std': () => L.tileLayer(GSI('std'), { maxZoom: 18, attribution: ATTR.gsi }),
+  'base-pale': () => L.tileLayer(GSI('pale'), { maxZoom: 18, attribution: ATTR.gsi }),
+  'base-photo': () => L.tileLayer(GSI('seamlessphoto', 'jpg'), { maxZoom: 18, attribution: ATTR.gsi }),
+  'ar-pois': () => map.poiLayer,
+  'ar-sector': () => map.sectorLayer,
+  contour: () => new ContourLayer({ maxNativeZoom: 14, minZoom: 9, attribution: ATTR.gsi, zIndex: 3 }),
+  hillshade: () => L.tileLayer(GSI('hillshademap'), { maxNativeZoom: 16, maxZoom: 18, opacity: 0.45, attribution: ATTR.gsi, zIndex: 2 }),
+  relief: () => L.tileLayer(GSI('relief'), { maxNativeZoom: 15, maxZoom: 18, opacity: 0.5, attribution: ATTR.gsi, zIndex: 2 }),
+  did: () => L.tileLayer(GSI('did2020'), { maxNativeZoom: 16, maxZoom: 18, opacity: 0.6, attribution: ATTR.gsi, zIndex: 3 }),
+  pref: () => { const g = L.layerGroup(); g.getAttribution = () => ATTR.osm; fillBoundaries(g, 4); return g; },
+  city: () => { const g = L.layerGroup(); g.getAttribution = () => ATTR.osm; fillBoundaries(g, 7); return g; },
+  temp: () => {
+    const g = L.layerGroup(); g.getAttribution = () => ATTR.jma;
+    fillTemps(g);
+    g.timer = setInterval(() => fillTemps(g), 10 * 60 * 1000);
+    return g;
+  },
+  rain: () => {
+    // 最新の時刻が分かるまでは透明な画像を指しておく(空の URL だとこのページ自体を読みに行く)
+    const blank = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+    const layer = L.tileLayer(blank, { maxNativeZoom: 10, maxZoom: 18, opacity: 0.7, attribution: ATTR.jma, zIndex: 4 });
+    const update = async () => { const url = await rainUrl(); if (url) layer.setUrl(url); };
+    update();
+    layer.timer = setInterval(update, 5 * 60 * 1000);
+    return layer;
+  },
+};
+const mapLayers = {};
+
+function applyLayers(ids) {
+  for (const group of LAYER_TREE) {
+    for (const item of group.children) {
+      const on = ids.has(item.id);
+      if (on && !mapLayers[item.id]) mapLayers[item.id] = LAYER_FACTORY[item.id]();
+      const layer = mapLayers[item.id];
+      if (!layer) continue;
+      if (on && !map.hasLayer(layer)) layer.addTo(map);
+      if (!on && map.hasLayer(layer)) map.removeLayer(layer);
+    }
+  }
+  map.sectorLayer.bringToFront?.();
+}
+
+// ツリーのチェックボックスで選ぶ操作パネル(地図の右上)
+function layerTreeControl(ids) {
+  const Control = L.Control.extend({
+    onAdd() {
+      const box = L.DomUtil.create('div', 'layer-control');
+      const button = L.DomUtil.create('button', 'layer-button', box);
+      button.type = 'button'; button.textContent = 'レイヤ';
+      button.setAttribute('aria-expanded', 'false');
+      const panel = L.DomUtil.create('div', 'layer-panel', box);
+      panel.hidden = true;
+      panel.id = 'layerPanel';
+      button.setAttribute('aria-controls', panel.id);
+      button.addEventListener('click', () => {
+        panel.hidden = !panel.hidden;
+        button.setAttribute('aria-expanded', String(!panel.hidden));
+      });
+      const tree = L.DomUtil.create('ul', 'layer-tree', panel);
+      tree.setAttribute('role', 'tree');
+      tree.setAttribute('aria-label', '地図のレイヤ');
+      for (const group of LAYER_TREE) {
+        const li = L.DomUtil.create('li', '', tree);
+        li.setAttribute('role', 'treeitem');
+        li.setAttribute('aria-expanded', 'true');
+        const head = L.DomUtil.create('label', 'layer-group', li);
+        const parent = document.createElement('input');
+        parent.type = 'checkbox';
+        if (group.radio) parent.disabled = true;  // 背景はどれか 1 つを必ず出す
+        head.append(parent, ` ${group.label}`);
+        const ul = L.DomUtil.create('ul', '', li);
+        ul.setAttribute('role', 'group');
+        const inputs = group.children.map((item) => {
+          const row = L.DomUtil.create('li', '', ul);
+          row.setAttribute('role', 'treeitem');
+          const label = L.DomUtil.create('label', '', row);
+          const input = document.createElement('input');
+          input.type = group.radio ? 'radio' : 'checkbox';
+          input.name = group.radio ? `layer-${group.id}` : '';
+          input.checked = ids.has(item.id);
+          input.dataset.layer = item.id;
+          label.append(input, ` ${item.label}`);
+          return input;
+        });
+        const syncParent = () => {
+          const on = inputs.filter((i) => i.checked).length;
+          parent.checked = on === inputs.length || (group.radio && on > 0);
+          parent.indeterminate = !group.radio && on > 0 && on < inputs.length;
+        };
+        const commit = () => {
+          for (const i of inputs) (i.checked ? ids.add : ids.delete).call(ids, i.dataset.layer);
+          syncParent(); saveLayerChoice(ids); applyLayers(ids);
+        };
+        for (const i of inputs) i.addEventListener('change', commit);
+        // 親を押すと、子をまとめて入れる/切る
+        parent.addEventListener('change', () => { for (const i of inputs) i.checked = parent.checked; commit(); });
+        syncParent();
+      }
+      L.DomEvent.disableClickPropagation(box);
+      L.DomEvent.disableScrollPropagation(box);
+      return box;
+    },
+  });
+  return new Control({ position: 'topright' });
+}
+
+function initMap() {
+  map = L.map('map', { zoomControl: true, attributionControl: true });
+  map.attributionControl.setPrefix(false);
+  map.sectorLayer = L.layerGroup();
+  map.poiLayer = L.layerGroup();
+  map.poiLayer.getAttribution = () => ATTR.osm;
+  const ids = loadLayerChoice();
+  if (!LAYER_TREE[0].children.some((c) => ids.has(c.id))) ids.add('base-std');
+  layerTreeControl(ids).addTo(map);
+  applyLayers(ids);
 }
 
 // 距離の範囲のバー(2 つのつまみ)
@@ -1452,7 +1761,7 @@ def main() -> None:
                          (display.run_forever, 'display')):
         threading.Thread(target=target, daemon=True, name=name).start()
 
-    ar = None
+    ar = layers = None
     try:
         config = CameraConfig.load(args.ar_config)
     except (ValueError, TypeError) as exc:
@@ -1468,6 +1777,9 @@ def main() -> None:
                 time.sleep(600 if ar.error or not ar.pois else 3600)
 
         threading.Thread(target=keep_pois, daemon=True, name='pois').start()
+        # 地図に重ねるレイヤ(境界・気温など)は、観光地と同じ範囲を対象にする
+        layers = MapLayers(config.lat, config.lon, config.fetch_radius_km, args.db.parent)
+        threading.Thread(target=layers.keep_updated, daemon=True, name='layers').start()
         log.info('AR: 方位 %.0f°、画角 %.1f°、%.0f〜%.0f km', ar.config.heading, ar.config.hfov,
                  ar.config.min_distance_km, ar.config.max_distance_km)
 
@@ -1477,7 +1789,7 @@ def main() -> None:
             state.expire(time.time())
 
     threading.Thread(target=housekeeping, daemon=True, name='housekeeping').start()
-    server = DashboardServer((args.bind, args.port), state, display, ar)
+    server = DashboardServer((args.bind, args.port), state, display, ar, layers)
     log.info('ダッシュボード: http://%s:%d/', args.bind, args.port)
     try:
         server.serve_forever()
