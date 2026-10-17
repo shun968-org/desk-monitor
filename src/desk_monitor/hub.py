@@ -647,7 +647,8 @@ DASHBOARD_HTML = r"""<!doctype html>
   /* レイヤの操作パネルは地図と同じ高さにし、中身が多ければ中だけをスクロールする */
   /* 幅は中身(いちばん長い項目名)に合わせ、横スクロールが要らないようにする(そのぶん地図が狭くなる)。
      項目が多くて高さが足りないときだけ、パネルの中で縦にスクロールする */
-  .layer-box { flex: none; display: flex; min-height: 0; }
+  /* isolation: Leaflet の部品の z-index(800)をこの欄の中に閉じ込め、サイドパネルの上に出ないようにする */
+  .layer-box { flex: none; display: flex; min-height: 0; position: relative; z-index: 0; isolation: isolate; }
   .layer-box .leaflet-control-layers { margin: 0; box-shadow: none; width: max-content; min-height: 0;
                                        overflow-x: hidden; overflow-y: auto; box-sizing: border-box; }
   /* Leaflet は操作パネルが地図の中にある前提で、中のリストに「地図の高さ - 位置」の高さとスクロールを
