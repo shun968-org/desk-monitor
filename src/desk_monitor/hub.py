@@ -622,7 +622,8 @@ DASHBOARD_HTML = r"""<!doctype html>
            align-items: center; gap: 12px; flex-wrap: wrap; }
   header h1 { font-size: 16px; margin: 0; }
   /* 1 画面に収める: 映像は残りの高さいっぱいに、右の列は中身だけスクロールする */
-  main { flex: 1; min-height: 0; display: grid; gap: 12px; padding: 12px;
+  /* 右端はサイドパネルのタブ(画面の右端に出ている)の幅だけ空け、中身に重ならないようにする */
+  main { flex: 1; min-height: 0; display: grid; gap: 12px; padding: 12px 40px 12px 12px;
          grid-template-columns: minmax(0, 1fr) minmax(500px, 42%); }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
             min-height: 0; }
@@ -644,14 +645,19 @@ DASHBOARD_HTML = r"""<!doctype html>
   #map { flex: 1; min-width: 0; min-height: 160px; border-radius: 6px; background: #222; position: relative;
          z-index: 0; isolation: isolate; }
   /* レイヤの操作パネルは地図と同じ高さにし、中身が多ければ中だけをスクロールする */
-  .layer-box { flex: none; width: 200px; display: flex; min-height: 0; overflow: hidden; }
-  /* min-width: 0 で欄の幅に収め(既定では文字の長さまで広がって外へはみ出す)、縦横のスクロールはパネルの中で行う */
-  .layer-box .leaflet-control-layers { margin: 0; box-shadow: none; flex: 1; min-width: 0; min-height: 0;
-                                       overflow: auto; box-sizing: border-box; }
+  /* 幅は中身(いちばん長い項目名)に合わせ、横スクロールが要らないようにする(そのぶん地図が狭くなる)。
+     項目が多くて高さが足りないときだけ、パネルの中で縦にスクロールする */
+  .layer-box { flex: none; display: flex; min-height: 0; }
+  .layer-box .leaflet-control-layers { margin: 0; box-shadow: none; width: max-content; min-height: 0;
+                                       overflow-x: hidden; overflow-y: auto; box-sizing: border-box; }
   /* Leaflet は操作パネルが地図の中にある前提で、中のリストに「地図の高さ - 位置」の高さとスクロールを
      書き込む。地図の外に置いたのでそれを打ち消し、スクロールは外側の枠(地図と同じ高さ)に任せる */
   .layer-box .leaflet-control-layers-list { height: auto !important; overflow: visible !important;
-                                             padding-right: 0 !important; }
+                                             padding: 0 !important; }
+  /* Leaflet の一覧は <section> なので、ダッシュボードのパネル用の section の枠・背景・余白がかかってしまう。
+     打ち消して、枠は外側の 1 つだけにする。区切り線の左右の負の余白(はみ出しの原因)もなくす */
+  .leaflet-control-layers-list { border: 0; background: none; border-radius: 0; }
+  .leaflet-control-layers-separator { margin: 6px 0; }
   #arInfo { margin-top: 4px; }
   #arOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   /* 地図のレイヤの操作パネル(leaflet.control.layers.tree)。行の高さと記号の欄の幅をそろえ、
