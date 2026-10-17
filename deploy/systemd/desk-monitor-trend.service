@@ -1,5 +1,5 @@
 # Bluesky Jetstream と Google Trends / RSS からトレンドの急増を検知し、
-# 表示プロセス(desk-monitor-display)に吹き出し通知を送る常駐プロセス(trend_monitor.py)。
+# 表示プロセス(desk-monitor-display)に吹き出し通知を送る常駐プロセス(desk_monitor.trend)。
 # systemd のユーザーサービスとして動かす。配置は scripts/deploy.sh で行う。
 
 [Unit]
@@ -10,7 +10,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/desk-monitor
-ExecStart=%h/desk-monitor/.venv/bin/python3 %h/desk-monitor/trend_monitor.py
+Environment=PYTHONPATH=%h/desk-monitor/src
+ExecStart=%h/desk-monitor/.venv/bin/python3 -m desk_monitor.trend
 Restart=on-failure
 RestartSec=15
 

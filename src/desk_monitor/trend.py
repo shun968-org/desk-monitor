@@ -1,13 +1,12 @@
-#!/usr/bin/env python3
 """トレンド監視デーモン。
 
 Bluesky Jetstream と Google Trends + RSS の 2 経路でキーワードの急増を検知し、
-show_face.py の Unix ドメインソケット経由で吹き出し通知を送る。
+表示プロセス(display.py)の Unix ドメインソケット経由で吹き出し通知を送る。
 
-通信プロトコル (show_face.py との Unix socket — 改行区切り JSON):
+通信プロトコル (display.py との Unix socket — 改行区切り JSON。bubble.py が受ける):
   {"cmd": "bubble", "text": "...", "source": "bluesky"|"trends_rss", "duration": 12}
 
-設定ファイル: 同ディレクトリの trend_config.json
+設定ファイル: config/trend_config.json
 
 Pi 側の依存パッケージ:
   sudo apt install python3-websockets python3-feedparser
@@ -22,13 +21,14 @@ import json
 import logging
 import socket
 import time
-from pathlib import Path
 
 import feedparser
 import websockets
 
+from desk_monitor.paths import CONFIG_DIR
+
 log = logging.getLogger(__name__)
-_CONFIG_PATH = Path(__file__).parent / 'trend_config.json'
+_CONFIG_PATH = CONFIG_DIR / 'trend_config.json'
 
 
 def _load_config() -> dict:
@@ -37,7 +37,7 @@ def _load_config() -> dict:
 
 
 def _notify(sock_path: str, text: str, source: str, duration: int) -> None:
-    """show_face.py の Unix ソケットに JSON 1 行を送る。接続失敗は警告のみ。"""
+    """表示プロセスの Unix ソケットに JSON 1 行を送る。接続失敗は警告のみ。"""
     payload = (
         json.dumps({'cmd': 'bubble', 'text': text, 'source': source,
                     'duration': duration}, ensure_ascii=False)

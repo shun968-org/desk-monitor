@@ -19,16 +19,11 @@ dest="desk-monitor"
 
 # 配置するもの(開発用の設定やドキュメントは送らない)
 files=(
-  show_face.py
-  object_detector.py
-  trend_monitor.py
-  show_camera.py
-  show_image.py
-  trend_config.json
+  src
+  assets
+  config
   requirements.txt
   requirements-pi.txt
-  faces
-  show_face_fonts
   deploy/systemd
 )
 
@@ -45,7 +40,7 @@ echo "==> $host:~/$dest に配置"
 # .lgd-nfy* など)は Pi 側にしかないので消さないよう保護する。
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-cp -r --parents "${files[@]}" "$stage/"
+rsync -a --relative --exclude='__pycache__/' "${files[@]}" "$stage/"
 rsync -az --delete \
   --filter='P .venv/' --filter='P models/' --filter='P __pycache__/' --filter='P .lgd-nfy*' \
   "$stage/" "$host:$dest/"
