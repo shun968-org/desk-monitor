@@ -933,7 +933,7 @@ function makePlot(chart, box) {
       y: { range: (u, lo, hi) => [Math.min(chart.min, lo ?? chart.min),
                                    Math.max(chart.key === 'temp' ? device().tempMax : chart.max, hi ?? 0)] },
     },
-    axes: [{ ...axis, size: 18, values: (u, ticks) => ticks.map((t) => fmtTime(t).slice(0, 5)) },
+    axes: [{ ...axis, size: 18, values: (u, ticks) => ticks.map((t) => new Date(t * 1000).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })) },
            { ...axis, size: 28 }],
     series: [{}, { stroke: () => device().color, width: 1.5, points: { show: false }, spanGaps: false }],
     hooks: { draw: [guideLine] },
