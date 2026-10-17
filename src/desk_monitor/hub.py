@@ -644,9 +644,10 @@ DASHBOARD_HTML = r"""<!doctype html>
   #map { flex: 1; min-width: 0; min-height: 160px; border-radius: 6px; background: #222; position: relative;
          z-index: 0; isolation: isolate; }
   /* レイヤの操作パネルは地図と同じ高さにし、中身が多ければ中だけをスクロールする */
-  .layer-box { flex: none; width: 200px; display: flex; min-height: 0; }
-  .layer-box .leaflet-control-layers { margin: 0; box-shadow: none; flex: 1; min-height: 0; overflow: auto;
-                                       box-sizing: border-box; }
+  .layer-box { flex: none; width: 200px; display: flex; min-height: 0; overflow: hidden; }
+  /* min-width: 0 で欄の幅に収め(既定では文字の長さまで広がって外へはみ出す)、縦横のスクロールはパネルの中で行う */
+  .layer-box .leaflet-control-layers { margin: 0; box-shadow: none; flex: 1; min-width: 0; min-height: 0;
+                                       overflow: auto; box-sizing: border-box; }
   /* Leaflet は操作パネルが地図の中にある前提で、中のリストに「地図の高さ - 位置」の高さとスクロールを
      書き込む。地図の外に置いたのでそれを打ち消し、スクロールは外側の枠(地図と同じ高さ)に任せる */
   .layer-box .leaflet-control-layers-list { height: auto !important; overflow: visible !important;
