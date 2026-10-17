@@ -26,9 +26,18 @@ Pi 上のファイルを直接編集・`scp` しない(次の deploy で上書�
 ## 依存関係
 
 - `requirements.txt`: コンテナ・開発機でも入る依存
+- `requirements-dev.txt`: テスト用(pytest など)。Pi には入れない
 - `requirements-pi.txt`: Pi 実機専用(gpiozero, spidev, picamera2, onnxruntime 等)。両サービスとも `~/desk-monitor/.venv` で動く
 - スマホアプリとの連携はない前提(mDNS / WebSocket の制御サーバと BLE プロビジョニングは削除済み)
 - Python は Pi と同じ 3.13 系
+
+## テスト
+
+- `tests/` に pytest の単体テストがある。Pi 専用パッケージ(spidev / gpiozero / picamera2)は `tests/conftest.py` などで偽モジュールに置き換え、ハードウェアなしで動かす
+- 実行: `pip install -r requirements-dev.txt && python -m pytest`(設定は `pyproject.toml`)。ホストの Python に依存を入れたくなければ
+  `docker run --rm -v "$PWD:/src:ro" python:3.13-slim sh -c 'cp -r /src /w && cd /w && pip install -q -r requirements-dev.txt && python -m pytest'`
+- CI(`.github/workflows/ci.yml`)でテストを実行し、カバレッジを SonarCloud に渡す
+- 実機でしか確かめられないこと(LCD の表示、カメラ、推論速度、温度)は、`scripts/deploy.sh` で pi_a に配置して確認する
 
 ## 開発規約
 

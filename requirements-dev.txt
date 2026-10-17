@@ -1,0 +1,4 @@
+# テスト用(開発機・CI)。Pi には入れない。
+-r requirements.txt
+pytest==8.4.2
+pytest-cov==7.0.0

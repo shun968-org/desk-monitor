@@ -68,6 +68,56 @@ class _Cooldown:
         return False
 
 
+class _BurstCounter:
+    """キーワードごとに直近 window 秒の出現時刻を数え、しきい値以上になったものを返す。"""
+
+    def __init__(self, keywords: list[str], window: float, threshold: int) -> None:
+        self._keywords = keywords
+        self._window = window
+        self._threshold = threshold
+        self._counts: dict[str, collections.deque] = {kw: collections.deque() for kw in keywords}
+
+    def add(self, text: str, now: float) -> list[tuple[str, int]]:
+        """text に含まれるキーワードを数え、しきい値以上の (キーワード, 件数) を返す。"""
+        bursts: list[tuple[str, int]] = []
+        for kw in self._keywords:
+            if kw not in text:
+                continue
+            dq = self._counts[kw]
+            dq.append(now)
+            while dq and dq[0] < now - self._window:
+                dq.popleft()
+            if len(dq) >= self._threshold:
+                bursts.append((kw, len(dq)))
+        return bursts
+
+    def reset(self, keyword: str) -> None:
+        self._counts[keyword].clear()
+
+
+def _post_text(raw: str | bytes) -> str:
+    """Jetstream のメッセージから投稿本文を取り出す。投稿でなければ空文字。"""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return ''
+    record = (data.get('commit') or {}).get('record') or {}
+    return record.get('text', '')
+
+
+def _rss_matches(entries: list, keywords: list[str], now: float,
+                 item_window: float) -> list[str]:
+    """直近 item_window 秒の記事のタイトル・概要に登場したキーワードを、記事ごとに返す。"""
+    matches: list[str] = []
+    for entry in entries:
+        pub = entry.get('published_parsed')
+        if pub and (now - calendar.timegm(pub)) > item_window:
+            continue
+        body = entry.get('title', '') + ' ' + entry.get('summary', '')
+        matches += [kw for kw in keywords if kw in body]
+    return matches
+
+
 async def _bluesky_task(cfg: dict, cooldown: _Cooldown) -> None:
     """Bluesky Jetstream WebSocket でキーワードをカウントし急増を検知する。"""
     bc = cfg['bluesky']
@@ -78,35 +128,22 @@ async def _bluesky_task(cfg: dict, cooldown: _Cooldown) -> None:
     duration: int = cfg['bubble_duration_seconds']
     url: str = bc['url']
 
-    counts: dict[str, collections.deque] = {kw: collections.deque() for kw in keywords}
+    counter = _BurstCounter(keywords, window, threshold)
 
     while True:
         try:
             async with websockets.connect(url, ping_interval=20, ping_timeout=15) as ws:
                 log.info('Bluesky Jetstream 接続完了')
                 async for raw in ws:
-                    try:
-                        data = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    record = (data.get('commit') or {}).get('record') or {}
-                    text = record.get('text', '')
+                    text = _post_text(raw)
                     if not text:
                         continue
-                    now = time.time()
-                    for kw in keywords:
-                        if kw not in text:
-                            continue
-                        dq = counts[kw]
-                        dq.append(now)
-                        while dq and dq[0] < now - window:
-                            dq.popleft()
-                        count = len(dq)
-                        if count >= threshold and cooldown.try_acquire(kw, 'bluesky'):
+                    for kw, count in counter.add(text, time.time()):
+                        if cooldown.try_acquire(kw, 'bluesky'):
                             msg = f'「{kw}」が多数投稿されています（{count}件/{int(window)}秒）'
                             log.info('[Bluesky] %s', msg)
                             _notify(sock_path, msg, 'bluesky', duration)
-                            dq.clear()
+                            counter.reset(kw)
         except Exception as exc:
             log.warning('Bluesky エラー（30 秒後に再接続）: %s', exc)
             await asyncio.sleep(30)
@@ -140,16 +177,11 @@ async def _rss_trends_task(cfg: dict, cooldown: _Cooldown) -> None:
         for feed_url in feeds:
             try:
                 parsed = await loop.run_in_executor(None, feedparser.parse, feed_url)
-                for entry in parsed.entries:
-                    pub = entry.get('published_parsed')
-                    if pub and (now - calendar.timegm(pub)) > item_window:
-                        continue
-                    body = entry.get('title', '') + ' ' + entry.get('summary', '')
-                    for kw in keywords:
-                        if kw in body and cooldown.try_acquire(kw, 'trends_rss'):
-                            msg = f'「{kw}」がニュースに登場しています'
-                            log.info('[RSS] %s (%s)', msg, feed_url)
-                            _notify(sock_path, msg, 'trends_rss', duration)
+                for kw in _rss_matches(parsed.entries, keywords, now, item_window):
+                    if cooldown.try_acquire(kw, 'trends_rss'):
+                        msg = f'「{kw}」がニュースに登場しています'
+                        log.info('[RSS] %s (%s)', msg, feed_url)
+                        _notify(sock_path, msg, 'trends_rss', duration)
             except Exception as exc:
                 log.warning('RSS エラー (%s): %s', feed_url, exc)
 
