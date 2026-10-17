@@ -623,7 +623,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   header h1 { font-size: 16px; margin: 0; }
   /* 1 画面に収める: 映像は残りの高さいっぱいに、右の列は中身だけスクロールする */
   main { flex: 1; min-height: 0; display: grid; gap: 12px; padding: 12px;
-         grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); }
+         grid-template-columns: minmax(0, 1fr) minmax(500px, 42%); }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
             min-height: 0; }
   h2 { font-size: 13px; color: var(--muted); margin: 0 0 6px; font-weight: 600; }
@@ -640,8 +640,11 @@ DASHBOARD_HTML = r"""<!doctype html>
   .map-section { flex: 1 1 0; min-height: 220px; display: flex; flex-direction: column; }
   /* Leaflet は地図の部品に z-index 400〜1000 を付けるので、独立した重なりの層に閉じ込める
      (閉じ込めないとサイドパネルやトーストの上に地図が描かれる) */
-  #map { flex: 1; min-height: 160px; border-radius: 6px; background: #222; position: relative; z-index: 0;
-         isolation: isolate; }
+  .map-row { flex: 1; min-height: 0; display: flex; gap: 8px; }
+  #map { flex: 1; min-width: 0; min-height: 160px; border-radius: 6px; background: #222; position: relative;
+         z-index: 0; isolation: isolate; }
+  .layer-box { flex: none; width: 200px; overflow: auto; }
+  .layer-box .leaflet-control-layers { margin: 0; box-shadow: none; }
   #arInfo { margin-top: 4px; }
   #arOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   /* 地図のレイヤの操作パネル(leaflet.control.layers.tree)。行の高さと記号の欄の幅をそろえ、
@@ -649,7 +652,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   .leaflet-control-layers { --row: 22px; --sym: 12px; --box: 14px; --line: #ffffff40;
                             background: #1b1b1bee; color: var(--text); border: 1px solid #ffffff26 !important;
                             border-radius: 8px; box-shadow: 0 4px 14px #0008; font: 12px/1.5 system-ui, sans-serif; }
-  .leaflet-control-layers-expanded { padding: 6px 10px 8px; max-height: 300px; overflow: auto; }
+  .leaflet-control-layers-expanded { padding: 6px 10px 8px; }
   .leaflet-control-layers-separator { border-top-color: #ffffff1a; }
   .leaflet-layerstree-header { display: flex; align-items: center; height: var(--row); white-space: nowrap; }
   .leaflet-layerstree-expand-collapse, .leaflet-layerstree-header-space {
@@ -752,6 +755,9 @@ DASHBOARD_HTML = r"""<!doctype html>
     .video { flex: none; aspect-ratio: 4 / 3; max-height: 70vh; }
     .scroll { max-height: 50vh; }
     .chart-panel canvas { flex: none; height: 120px; }
+    .map-row { flex-direction: column; }
+    #map { min-height: 260px; }
+    .layer-box { width: auto; }
   }
 </style>
 </head>
@@ -791,7 +797,11 @@ DASHBOARD_HTML = r"""<!doctype html>
     </section>
     <section class="map-section">
       <h2>観光地の範囲(扇形: カメラの画角と距離の上限)</h2>
-      <div id="map" role="img" aria-label="設置場所とラベルを出す範囲の地図"></div>
+      <div class="map-row">
+        <div id="map" role="img" aria-label="設置場所とラベルを出す範囲の地図"></div>
+        <!-- 地図のレイヤの操作パネル(leaflet.control.layers.tree)を、地図の外に常に開いて置く -->
+        <div class="layer-box" id="layerBox" aria-label="地図のレイヤ"></div>
+      </div>
       <div class="range-row">
         <span class="kv">距離</span>
         <div class="range" id="rangeBox">
@@ -1550,9 +1560,14 @@ function initMap() {
   // 保存していた選択を先に地図へ出しておくと、操作パネルのチェックがそれに合う
   for (const [id, layer] of Object.entries(layers)) if (ids.has(id)) layer.addTo(map);
   const trees = layerTrees(layers);
-  L.control.layers.tree(trees.base, trees.overlays, {
-    collapsed: true, closedSymbol: '▸', openedSymbol: '▾', spaceSymbol: '',
+  const control = L.control.layers.tree(trees.base, trees.overlays, {
+    collapsed: false, closedSymbol: '▸', openedSymbol: '▾', spaceSymbol: '',
   }).addTo(map);
+  // 操作パネルを地図の外(右側)に移し、常に開いておく。クリックやスクロールが地図に伝わらないようにする
+  const panel = control.getContainer();
+  $('layerBox').append(panel);
+  L.DomEvent.disableClickPropagation(panel);
+  L.DomEvent.disableScrollPropagation(panel);
   const save = () => saveLayerChoice(new Set(Object.keys(layers).filter((id) => map.hasLayer(layers[id]))));
   map.on('overlayadd overlayremove baselayerchange', save);
 }
