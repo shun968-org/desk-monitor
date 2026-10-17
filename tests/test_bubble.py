@@ -4,7 +4,6 @@ import json
 import socket
 import time
 
-import numpy as np
 from PIL import Image, ImageDraw
 
 from desk_monitor import bubble

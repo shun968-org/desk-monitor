@@ -4,6 +4,8 @@
   camera : Picamera2 のライブ映像を表示する(鏡像を 180° 回転して表示)
            YOLO で物体を検出し、検出枠とラベル(種類・信頼度)を重ねて描く
            (detector.py。onnxruntime かモデルが無ければ映像のみ表示)
+           ダッシュボード(pi_b の dashboard.py)が設定されていれば、閲覧者がいるときだけ
+           同じ画を送る(feed.py)
 
 プロセスは起動後常駐し、以下のシグナルでモードを即時切替する
 (プロセス再起動・LCD/カメラの再初期化を伴わないため瞬時に切り替わる)。
@@ -19,7 +21,7 @@
     PYTHONPATH=src python3 -m desk_monitor.display
         [--mode camera|face] [--brightness 0.0-1.0] [--fps 30]
         [--expression auto|smile|neutral] [--no-detect] [--model PATH]
-        [--conf 0.4] [--detect-interval 1.0]
+        [--conf 0.4] [--detect-interval 1.0] [--dashboard-fps 5]
 
 依存パッケージ:
     sudo apt install python3-pil python3-numpy python3-spidev python3-gpiozero python3-lgpio
@@ -31,6 +33,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import subprocess
 import sys
@@ -97,9 +100,24 @@ def _create_detection_worker(model_path: Path, conf: float, interval: float):
         return None
 
 
+def _create_dashboard_feed(fps: float):
+    """ダッシュボード(pi_b)への送信を用意する。接続先が設定されていなければ None。"""
+    addr = os.environ.get('DESK_MONITOR_FEED_ADDR', '')
+    token = os.environ.get('DESK_MONITOR_FEED_TOKEN', '')
+    if not addr or not token:
+        return None
+    try:
+        from desk_monitor.feed import DashboardFeed, parse_addr
+        return DashboardFeed(parse_addr(addr), token, fps=fps)
+    except ValueError as exc:
+        print(f'ダッシュボードの接続先が不正なため送信しません: {exc}',
+              file=sys.stderr, flush=True)
+        return None
+
+
 def run(lcd: GC9A01, fps: float, expression: str, initial_mode: str,
         socket_path: str, detect: bool, model_path: Path, conf: float,
-        detect_interval: float) -> None:
+        detect_interval: float, dashboard_fps: float = 0.0) -> None:
     controller = ModeController(initial_mode)
     animator = FaceAnimator()
     camera = CameraSource()
@@ -110,6 +128,7 @@ def run(lcd: GC9A01, fps: float, expression: str, initial_mode: str,
     if detector is not None:
         from desk_monitor.detector import draw_detections
         label_font = get_font(13)
+    feed = _create_dashboard_feed(dashboard_fps) if dashboard_fps > 0 else None
     period = 1.0 / fps
 
     try:
@@ -121,9 +140,16 @@ def run(lcd: GC9A01, fps: float, expression: str, initial_mode: str,
                 if detector is not None:
                     detector.submit(arr)
                     arr = draw_detections(arr, detector.latest(t), label_font)
+                if feed is not None:
+                    # ダッシュボードには LCD と同じ画(検出枠つき)を、見ている人がいるときだけ送る
+                    feed.set_mode('camera')
+                    if feed.wanted(t):
+                        feed.publish(arr, t)
             else:
                 # 吹き出しは face 表示のときのみ（camera 表示中は表示時間だけが進む）
                 arr = bubble.apply(animator.frame(t, expression), t)
+                if feed is not None:
+                    feed.set_mode('face')
             lcd.push_rgb(arr)
             elapsed = time.time() - t
             if elapsed < period:
@@ -155,6 +181,9 @@ def main() -> None:
                         help='物体検出の信頼度しきい値 0.0-1.0 (既定: 0.4)')
     parser.add_argument('--detect-interval', type=float, default=1.0,
                         help='物体検出の実行間隔の下限 秒 (既定: 1.0。発熱を抑えるため)')
+    parser.add_argument('--dashboard-fps', type=float, default=5.0,
+                        help='ダッシュボードに送る映像の上限 fps。0 で送らない (既定: 5。'
+                             '接続先は環境変数 DESK_MONITOR_FEED_ADDR / DESK_MONITOR_FEED_TOKEN)')
     args = parser.parse_args()
 
     if not 0.0 <= args.brightness <= 1.0:
@@ -166,7 +195,8 @@ def main() -> None:
         lcd.init()
         lcd.bl.value = args.brightness
         run(lcd, args.fps, args.expression, args.mode, args.socket_path,
-            args.detect, args.model, args.conf, args.detect_interval)
+            args.detect, args.model, args.conf, args.detect_interval,
+            args.dashboard_fps)
     except KeyboardInterrupt:
         pass
     finally:

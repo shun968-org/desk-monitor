@@ -11,6 +11,8 @@ Description=desk-monitor display (GC9A01 face / camera with object detection)
 Type=simple
 WorkingDirectory=%h/desk-monitor
 Environment=PYTHONPATH=%h/desk-monitor/src
+# ダッシュボード(pi_b)への送信先とトークン。無ければ送信しない(scripts/setup-dashboard.sh で作る)
+EnvironmentFile=-%h/.config/desk-monitor/feed.env
 ExecStart=%h/desk-monitor/.venv/bin/python3 -m desk_monitor.display
 # 表示プロセスは SIGINT(KeyboardInterrupt)で LCD とカメラを閉じてから終了する
 KillSignal=SIGINT

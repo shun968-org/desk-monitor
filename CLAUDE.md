@@ -2,20 +2,30 @@
 
 ## このリポジトリ
 
-Raspberry Pi(`ssh pi_a`、ホスト名 node-a-local)で動くデスクトップモニタ「desk-monitor」のソース一式。
-**正はこのリポジトリ**であり、Pi への反映は `scripts/deploy.sh [host]`(既定 `pi_a`)で行う。
-rsync で `~/desk-monitor/` に配置し、`~/desk-monitor/.venv` を更新して systemd ユーザーサービスを再起動する。
+Raspberry Pi で動くデスクトップモニタ「desk-monitor」のソース一式。Pi は 2 台で、役割(role)が違う。
+
+- `pi_a`(node-a-local): 表示プロセスとトレンド監視(role `display`)。LCD・カメラが付いている
+- `pi_b`(node-b-local、192.168.10.111): ブラウザ向けダッシュボード(role `dashboard`)。pi_a から映像を受けて LAN 内に配信する
+
+**正はこのリポジトリ**であり、Pi への反映は `scripts/deploy.sh [host] [role]`(既定 `pi_a`。`pi_b` なら role は `dashboard`)で行う。
+rsync で `~/desk-monitor/` に配置し、(display のみ)`~/desk-monitor/.venv` を更新して systemd ユーザーサービスを再起動する。
 Pi 上のファイルを直接編集・`scp` しない(次の deploy で上書き・削除される)。
 ログは `journalctl _SYSTEMD_USER_UNIT=desk-monitor-display.service`(Pi では `journalctl --user` が使えない)。
 
 ソースは `src/desk_monitor/` パッケージ。systemd からは `PYTHONPATH=src` で `python -m desk_monitor.<module>` として起動する。
 
 - `display.py`: 表示プロセスのエントリポイント。GC9A01 ディスプレイ(240x240)に表情アニメーションまたはカメラ映像を表示する。
-  systemd ユーザーサービス `desk-monitor-display`(`deploy/systemd/`)として動く。モード切替は SIGUSR1(face)/ SIGUSR2(camera)
+  systemd ユーザーサービス `desk-monitor-display`(`deploy/systemd/display/`)として動く。モード切替は SIGUSR1(face)/ SIGUSR2(camera)
   - `lcd.py`(GC9A01 ドライバ。全ツールで共用)、`face.py`(表情アニメーション)、`bubble.py`(吹き出しと通知用 Unix ソケット)、
     `camera.py`(Picamera2)、`fonts.py`、`paths.py`(素材・設定・モデルの場所)
   - `detector.py`: camera モードの物体検出(YOLO11n / ONNX Runtime)。モデル(`models/yolo11n.onnx`、git 管理外)は
     `scripts/export_yolo.sh` で生成し、`scripts/deploy.sh` が Pi に配置する
+- `feed.py`(pi_a)/ `dashboard.py`(pi_b): camera 表示中の画(検出枠つき)を LAN 内のブラウザに配信する。
+  pi_a は pi_b の feed ポート(8081)に外向きに接続し、閲覧者がいるときだけ JPEG を送る(pi_a は待ち受けポートを開かない)。
+  pi_b は HTTP 8080 で MJPEG を配信する(Basic 認証、プライベート IP 以外は拒否)。`dashboard.py` は標準ライブラリだけで動き、
+  pi_b では venv を使わない。systemd ユーザーサービス `desk-monitor-dashboard`(`deploy/systemd/dashboard/`)
+  - パスワードと共有トークンは各 Pi の `~/.config/desk-monitor/{dashboard,feed}.env`(600)に置き、リポジトリには置かない。
+    設定は `scripts/setup-dashboard.sh`(パスワードを入力するので、ユーザーが自分の端末で実行する)
 - `trend.py`: Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセスに吹き出し通知を送る。
   設定は `config/trend_config.json`。systemd ユーザーサービス `desk-monitor-trend` として動く
 - `tools/show_camera.py` / `tools/show_image.py`: カメラ・画像表示の単発ユーティリティ(表示サービスを止めてから使う)

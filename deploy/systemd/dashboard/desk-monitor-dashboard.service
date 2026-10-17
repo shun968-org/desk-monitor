@@ -1,0 +1,24 @@
+# camera 映像(検出枠つき)を LAN 内のブラウザに配信するダッシュボード(desk_monitor.dashboard)。
+# pi_b で systemd のユーザーサービスとして動かす。配置は scripts/deploy.sh pi_b で行う。
+# 表示プロセス(pi_a)から feed ポート 8081 にフレームが届き、ブラウザには HTTP 8080 で配信する。
+
+[Unit]
+Description=desk-monitor dashboard (LAN camera stream with object detection)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/desk-monitor
+Environment=PYTHONPATH=%h/desk-monitor/src
+# パスワードと feed のトークン(scripts/setup-dashboard.sh で作る)。リポジトリには置かない
+EnvironmentFile=-%h/.config/desk-monitor/dashboard.env
+# 標準ライブラリだけで動くので venv は使わない
+ExecStart=/usr/bin/python3 -m desk_monitor.dashboard
+Restart=on-failure
+RestartSec=5
+# パスワードかトークンが未設定(終了コード 2)なら再起動しない
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=default.target
