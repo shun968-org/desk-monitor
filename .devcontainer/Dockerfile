@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         neovim \
         jq \
         openssh-client \
+        rsync \
     && rm -rf /var/lib/apt/lists/*
 
 # gh is required by this repo's Git conventions (branch creation, PR merge — see
