@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 
 _THERMAL = Path('/sys/class/thermal/thermal_zone0/temp')
+_MEMINFO = Path('/proc/meminfo')
+_UPTIME = Path('/proc/uptime')
 
 
 def read_temp() -> float | None:
@@ -23,6 +25,23 @@ def read_throttled() -> int | None:
                              text=True, timeout=2).stdout
         return int(out.strip().split('=')[1], 16)
     except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        return None
+
+
+def read_memory() -> float | None:
+    """メモリ使用率(%)。キャッシュなど解放できる分は使用中に数えない(MemAvailable)。"""
+    try:
+        info = {k: int(v.split()[0]) for k, v in
+                (line.split(':', 1) for line in _MEMINFO.read_text().splitlines() if ':' in line)}
+        return round(100.0 * (1 - info['MemAvailable'] / info['MemTotal']), 1)
+    except (OSError, KeyError, ValueError, ZeroDivisionError):
+        return None
+
+
+def read_uptime() -> float | None:
+    try:
+        return float(_UPTIME.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
         return None
 
 
@@ -56,4 +75,6 @@ def snapshot(meter: CpuMeter) -> dict:
         'temp': read_temp(),
         'cpu': meter.percent(),
         'throttled': read_throttled(),
+        'memory': read_memory(),
+        'uptime': read_uptime(),
     }

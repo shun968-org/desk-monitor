@@ -1,27 +1,36 @@
 #!/usr/bin/env bash
 #
-# ハブ(desk_monitor.hub、開発 PC)の物体検出で使う YOLO11n を ONNX に書き出し、models/yolo11n.onnx に置く。
+# ハブ(desk_monitor.hub、開発 PC)の物体検出で使う YOLO11 を ONNX に書き出し、models/<モデル名>.onnx に置く。
 # 開発機の Python 環境を汚さないよう Docker コンテナ内で ultralytics を使う。
-# 入力サイズの既定は 640x640(開発 PC の CPU で毎フレーム推論できる)。
 #
-# 使い方: scripts/export_yolo.sh [入力サイズ(既定 640)]
-# 反映: scripts/deploy-hub.sh(models/ をコンテナにマウントしている)
+# 使い方: scripts/export_yolo.sh [モデル名 ...]   (既定: yolo11m。例: yolo11n yolo11s yolo11m)
+#   入力サイズは環境変数 IMGSZ(既定 640)
+# 反映: scripts/deploy-hub.sh(models/ をコンテナにマウントしている。使うモデルは
+#       ~/.config/desk-monitor/desk-monitor.env の DESK_MONITOR_MODEL、既定 models/yolo11m.onnx)
 
 set -euo pipefail
 
-IMGSZ="${1:-640}"
+IMGSZ="${IMGSZ:-640}"
+if [[ $# -gt 0 ]]; then models=("$@"); else models=(yolo11m); fi
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+
+exports=""
+for m in "${models[@]}"; do
+  [[ "$m" =~ ^yolo[0-9a-z]+$ ]] || { echo "モデル名が不正です: $m" >&2; exit 1; }
+  exports+="yolo export model=$m.pt format=onnx imgsz=$IMGSZ opset=17 simplify=True dynamic=False && "
+done
 
 docker run --rm -v "$work:/w" -w /w python:3.12-slim sh -c "
   apt-get update -qq && apt-get install -y -qq libgl1 libglib2.0-0 >/dev/null
   pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
   pip install -q ultralytics onnx onnxslim
-  yolo export model=yolo11n.pt format=onnx imgsz=$IMGSZ opset=17 simplify=True dynamic=False
-  chown $(id -u):$(id -g) yolo11n.onnx
+  ${exports} chown $(id -u):$(id -g) *.onnx
 "
 
 mkdir -p "$repo_root/models"
-mv "$work/yolo11n.onnx" "$repo_root/models/yolo11n.onnx"
-echo "書き出し完了: $repo_root/models/yolo11n.onnx"
+for m in "${models[@]}"; do
+  mv "$work/$m.onnx" "$repo_root/models/$m.onnx"
+  echo "書き出し完了: $repo_root/models/$m.onnx"
+done

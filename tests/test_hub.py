@@ -182,3 +182,38 @@ def test_main_requires_settings(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         hub.main()
     assert exc.value.code == 2
+
+
+def test_metrics_record_device_samples():
+    state = hub.HubState(hub.History(':memory:'))
+    state.record_camera({'system': {'cpu': 8.0, 'temp': 64.5, 'memory': 20.0},
+                         'camera': {'fps': {'h264': 20.5}}}, 100.0)
+    state.record_display({'system': {'cpu': 15.0, 'temp': 67.0}, 'display': {'fps': 24.0}}, 101.0)
+    state.record_camera({'system': 'broken', 'camera': None}, 102.0)  # 壊れた状態でも落ちない
+    state.expire(103.0)
+    m = state.metrics_snapshot()
+    assert m['camera'][0] == {'t': 100.0, 'cpu': 8.0, 'temp': 64.5, 'memory': 20.0, 'fps': 20.5}
+    assert m['camera'][1]['cpu'] is None
+    assert m['display'][0]['fps'] == 24.0
+    assert m['hub'][0] == {'t': 103.0, 'fps': 0.0, 'ms': None}
+    # 古いものから捨てる
+    state.record('hub', {'fps': 1}, 103.0 + hub.METRICS_SEC + 1)
+    assert [p['t'] for p in state.metrics_snapshot()['hub']] == [103.0 + hub.METRICS_SEC + 1]
+
+
+def test_dashboard_metrics_api(dashboard):
+    state, _, addr = dashboard
+    state.record('display', {'cpu': 1.0}, time.time())
+    status, body = _request(addr, 'GET', '/api/metrics')
+    assert status == 200 and json.loads(body)['display'][0]['cpu'] == 1.0
+
+
+def test_notifications_since(dashboard):
+    state, _, addr = dashboard
+    state.history.add_notification(10.0, 'bluesky', '古い')
+    state.history.add_notification(20.0, 'test', '新しい')
+    state.history.add_notification(30.0, 'trends_rss', 'もっと新しい')
+    status, body = _request(addr, 'GET', '/api/notifications?since=10')
+    assert [x['text'] for x in json.loads(body)['notifications']] == ['新しい', 'もっと新しい']
+    status, body = _request(addr, 'GET', '/api/notifications?since=bad')
+    assert len(json.loads(body)['notifications']) == 3

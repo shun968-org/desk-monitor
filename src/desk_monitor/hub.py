@@ -18,11 +18,12 @@
   DESK_MONITOR_DISPLAY_ADDR(例 192.168.10.113:8083)
 
 使い方(リポジトリ直下で。通常は deploy/hub の Docker で動かす):
-    PYTHONPATH=src python3 -m desk_monitor.hub [--port 8090] [--model models/yolo11n.onnx]
+    PYTHONPATH=src python3 -m desk_monitor.hub [--port 8090] [--model models/yolo11m.onnx]
 """
 from __future__ import annotations
 
 import argparse
+import collections
 import io
 import json
 import logging
@@ -47,7 +48,9 @@ from desk_monitor.paths import MODELS_DIR
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = MODELS_DIR / 'yolo11n.onnx'
+DEFAULT_MODEL = MODELS_DIR / 'yolo11m.onnx'
+# 機器の状態の推移を残す長さ(状態は約 2 秒ごとに届く)
+METRICS_SEC = 600
 DEFAULT_DB = Path.home() / '.local' / 'share' / 'desk-monitor' / 'hub.sqlite3'
 RETRY_SEC = 5.0
 PING_SEC = 2.0
@@ -94,6 +97,14 @@ class History:
         with self._lock, self._db:
             self._db.execute('INSERT INTO notifications (at, source, text) VALUES (?, ?, ?)',
                              (at, source, text))
+
+    def notifications_since(self, since: float, limit: int = 20) -> list[dict]:
+        """since より後の通知を古い順に返す(ダッシュボードのトースト表示用)。"""
+        with self._lock:
+            rows = self._db.execute(
+                'SELECT at, source, text FROM notifications WHERE at > ? ORDER BY at DESC LIMIT ?',
+                (since, limit)).fetchall()
+        return [dict(zip(('at', 'source', 'text'), r)) for r in reversed(rows)]
 
     def recent(self, limit: int = 50) -> dict:
         with self._lock:
@@ -166,8 +177,33 @@ class HubState:
         self.inference_fps = 0.0
         self._inferences: list[float] = []
         self.camera: dict = {'connected': False}
+        # 機器ごとの状態の推移。{'t': 時刻, 'cpu': .., 'temp': .., ...} の並び
+        self.metrics: dict[str, collections.deque] = {
+            name: collections.deque(maxlen=METRICS_SEC) for name in ('camera', 'display', 'hub')}
         self.display: dict = {'connected': False}
         self.tracker = PresenceTracker(history.add_detection)
+
+    def record(self, device: str, values: dict, now: float) -> None:
+        """状態を推移として残す(ダッシュボードのグラフに使う)。"""
+        series = self.metrics[device]
+        series.append({'t': round(now, 1), **values})
+        while series and now - series[0]['t'] > METRICS_SEC:
+            series.popleft()
+
+    def record_camera(self, header: dict, now: float) -> None:
+        system = header.get('system') if isinstance(header.get('system'), dict) else {}
+        fps = ((header.get('camera') or {}).get('fps') or {}) if isinstance(header.get('camera'), dict) else {}
+        self.record('camera', {'cpu': system.get('cpu'), 'temp': system.get('temp'),
+                               'memory': system.get('memory'), 'fps': fps.get('h264')}, now)
+
+    def record_display(self, header: dict, now: float) -> None:
+        system = header.get('system') if isinstance(header.get('system'), dict) else {}
+        display = header.get('display') if isinstance(header.get('display'), dict) else {}
+        self.record('display', {'cpu': system.get('cpu'), 'temp': system.get('temp'),
+                                'memory': system.get('memory'), 'fps': display.get('fps')}, now)
+
+    def metrics_snapshot(self) -> dict:
+        return {name: list(series) for name, series in self.metrics.items()}
 
     def set_frame(self, frame: np.ndarray, now: float) -> None:
         with self._lock:
@@ -193,6 +229,9 @@ class HubState:
         with self._lock:
             if now - self.detections_at > 1.0:
                 self.tracker.update([], now)
+                self.inference_fps = round(len([t for t in self._inferences if now - t < 5.0]) / 5.0, 1)
+            fps, ms = self.inference_fps, self.inference_ms
+        self.record('hub', {'fps': fps, 'ms': round(ms, 1) if ms is not None else None}, now)
 
     def annotated_jpeg(self, font) -> bytes | None:
         with self._lock:
@@ -256,6 +295,7 @@ class CameraLink:
                         if header.get('type') == 'status':
                             self._state.camera = {'connected': True,
                                                   **{k: header.get(k) for k in ('camera', 'system')}}
+                            self._state.record_camera(header, time.time())
                         elif header.get('type') == 'frame':
                             self._decode(decoder, payload)
             except (OSError, EOFError, wire.ProtocolError) as exc:
@@ -329,6 +369,7 @@ class DisplayLink:
         if kind == 'status':
             self._state.display = {'connected': True,
                                    **{k: header.get(k) for k in ('display', 'system')}}
+            self._state.record_display(header, time.time())
         elif kind == 'bubble':
             self._state.history.add_notification(
                 float(header.get('at') or time.time()), str(header.get('source', '')),
@@ -370,6 +411,14 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self._send(200, 'text/html; charset=utf-8', DASHBOARD_HTML.encode())
         elif url.path == '/api/state':
             self._json(self.server.state.snapshot())
+        elif url.path == '/api/notifications':
+            try:
+                since = float(parse_qs(url.query).get('since', ['0'])[0])
+            except ValueError:
+                since = 0.0
+            self._json({'notifications': self.server.state.history.notifications_since(since)})
+        elif url.path == '/api/metrics':
+            self._json(self.server.state.metrics_snapshot())
         elif url.path == '/api/history':
             limit = parse_qs(url.query).get('limit', ['50'])[0]
             self._json(self.server.state.history.recent(max(1, min(500, int(limit)))
@@ -462,58 +511,97 @@ DASHBOARD_HTML = r"""<!doctype html>
   :root { color-scheme: dark; --bg: #111; --panel: #1b1b1b; --line: #2a2a2a; --text: #ddd;
           --muted: #8a8a8a; --ok: #4caf50; --warn: #ffb300; --ng: #ef5350; }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body { margin: 0; background: var(--bg); color: var(--text);
-         font: 14px/1.5 system-ui, sans-serif; }
-  header { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex;
+         font: 14px/1.5 system-ui, sans-serif; display: flex; flex-direction: column; }
+  header { padding: 8px 16px; border-bottom: 1px solid var(--line); display: flex;
            align-items: center; gap: 12px; flex-wrap: wrap; }
   header h1 { font-size: 16px; margin: 0; }
-  main { display: grid; gap: 16px; padding: 16px;
-         grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
-  h2 { font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
-  .video { position: relative; aspect-ratio: 4 / 3; background: #000; border-radius: 6px; overflow: hidden; }
-  .video img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* 1 画面に収める: 映像は残りの高さいっぱいに、右の列は中身だけスクロールする */
+  main { flex: 1; min-height: 0; display: grid; gap: 12px; padding: 12px;
+         grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+            min-height: 0; }
+  h2 { font-size: 13px; color: var(--muted); margin: 0 0 6px; font-weight: 600; }
+  .camera { display: flex; flex-direction: column; }
+  .video { position: relative; flex: 1; min-height: 0; background: #000; border-radius: 6px; overflow: hidden; }
+  .video img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
   .video .msg { position: absolute; inset: 0; display: grid; place-items: center; background: #000c; }
   .video .msg[hidden] { display: none; }
-  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; min-height: 26px; }
-  .chip { background: #263238; border-radius: 12px; padding: 2px 10px; }
-  .devices { display: grid; gap: 8px; }
-  .device { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  .side { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .side .history { flex: 1; display: flex; flex-direction: column; }
+  .devices { display: grid; gap: 6px; }
+  .device { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
   .device b { display: inline-flex; align-items: center; gap: 6px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ng); display: inline-block; }
   .dot.ok { background: var(--ok); }
   .kv { color: var(--muted); font-size: 12px; }
   .warn { color: var(--warn); }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 4px 0; }
+  .tile { background: #222; border-radius: 6px; padding: 2px 8px; display: flex; flex-direction: column; }
+  .tile .value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile.warnv .value, .kv.warnv { color: var(--warn); }
+  .tile.alert .value, .kv.alert { color: var(--ng); }
+  .charts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+  .charts canvas { width: 100%; height: 120px; background: #161616; border: 1px solid var(--line);
+                   border-radius: 6px; display: block; }
   button { background: #333; color: var(--text); border: 1px solid #444; border-radius: 6px;
-           padding: 6px 12px; cursor: pointer; }
+           padding: 4px 12px; cursor: pointer; }
   button[aria-pressed="true"] { background: #1565c0; border-color: #1e88e5; }
-  form { display: flex; gap: 6px; margin-top: 8px; }
+  form { display: flex; gap: 6px; margin-top: 6px; }
   input { flex: 1; min-width: 0; background: #222; color: var(--text); border: 1px solid #444;
-          border-radius: 6px; padding: 6px; }
+          border-radius: 6px; padding: 4px 6px; }
+  .toasts { position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; flex-direction: column;
+            gap: 8px; width: min(360px, calc(100vw - 32px)); pointer-events: none; }
+  .toast { pointer-events: auto; cursor: pointer; background: #263238; border: 1px solid #37474f;
+           border-left: 4px solid var(--src, #90a4ae); border-radius: 6px; padding: 8px 10px;
+           box-shadow: 0 4px 16px #0008; animation: toast-in .2s ease; }
+  .toast .kv { display: block; }
+  .toast.leaving { opacity: 0; transition: opacity .3s ease; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+  @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 92vw); z-index: 10;
+            background: var(--panel); border-left: 1px solid var(--line); box-shadow: -8px 0 24px #0008;
+            padding: 12px; display: flex; flex-direction: column; gap: 6px;
+            transform: translateX(100%); transition: transform .2s ease; visibility: hidden; }
+  .drawer.open { transform: none; visibility: visible; }
+  .drawer-head { display: flex; align-items: center; justify-content: space-between; }
+  .drawer-head h2 { margin: 0; }
+  .scroll { flex: 1; min-height: 0; overflow: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; }
-  .scroll { max-height: 280px; overflow: auto; }
-  .wide { grid-column: 1 / -1; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-  .wide section { min-width: 0; }
+  td, th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  /* 狭い画面では縦に並べ、ページ全体をスクロールする(映像は画面の 70% まで) */
+  @media (max-width: 900px) {
+    html, body { height: auto; }
+    main { grid-template-columns: 1fr; }
+    .video { flex: none; aspect-ratio: 4 / 3; max-height: 70vh; }
+    .scroll { max-height: 50vh; }
+    .charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>desk-monitor</h1>
   <span class="kv" id="clock"></span>
+  <button id="drawerOpen" style="margin-left:auto" aria-controls="drawer" aria-expanded="false">検出履歴</button>
 </header>
 <main>
-  <section>
+  <section class="camera">
     <h2>カメラ(全視野・検出枠つき)</h2>
     <div class="video">
       <img id="video" alt="カメラ映像">
       <div class="msg" id="videoMsg">接続中…</div>
     </div>
-    <div class="chips" id="present"></div>
+    <div class="charts">
+      <canvas id="chartTemp"></canvas>
+      <canvas id="chartCpu"></canvas>
+      <canvas id="chartMem"></canvas>
+      <canvas id="chartFps"></canvas>
+    </div>
   </section>
-  <div style="display:grid; gap:16px; align-content:start">
+  <div class="side">
     <section>
       <h2>操作</h2>
       <div style="display:flex; gap:6px">
@@ -531,18 +619,20 @@ DASHBOARD_HTML = r"""<!doctype html>
       <div class="devices" id="devices"></div>
     </section>
   </div>
-  <div class="wide">
-    <section>
-      <h2>検出履歴</h2>
-      <div class="kv" id="counts"></div>
-      <div class="scroll"><table id="detections"><thead><tr><th>種類</th><th>時刻</th><th>長さ</th><th>最大数</th><th>信頼度</th></tr></thead><tbody></tbody></table></div>
-    </section>
-    <section>
-      <h2>通知履歴</h2>
-      <div class="scroll"><table id="notifications"><thead><tr><th>時刻</th><th>通知元</th><th>内容</th></tr></thead><tbody></tbody></table></div>
-    </section>
-  </div>
 </main>
+<!-- 通知のトースト。読み上げはするがフォーカスは移さない(フォーカスを受け取る要素を置かない) -->
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<!-- サイドパネル(通常は閉じておき、ヘッダーのボタンで開く) -->
+<aside class="drawer" id="drawer" aria-hidden="true" aria-labelledby="drawerTitle">
+  <div class="drawer-head">
+    <h2 id="drawerTitle">検出履歴</h2>
+    <button id="drawerClose" aria-label="閉じる">×</button>
+  </div>
+  <div class="kv" id="counts"></div>
+  <div class="scroll">
+    <table id="detections"><thead><tr><th>種類</th><th>時刻</th><th>長さ</th><th>数</th><th>信頼度</th></tr></thead><tbody></tbody></table>
+  </div>
+</aside>
 <script>
 const $ = (id) => document.getElementById(id);
 const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString('ja-JP');
@@ -556,28 +646,140 @@ let streaming = false;
 const video = $('video');
 video.addEventListener('error', () => { streaming = false; });
 
-function device(name, info, lines) {
-  const div = document.createElement('div');
-  div.className = 'device';
-  const b = document.createElement('b');
-  const dot = document.createElement('span');
-  dot.className = 'dot' + (info.connected ? ' ok' : '');
-  b.append(dot, name);
-  div.append(b);
-  for (const [text, warn] of lines) {
-    const p = document.createElement('div');
-    p.className = 'kv' + (warn ? ' warn' : '');
-    p.textContent = text;
-    div.append(p);
+let metrics = { camera: [], display: [], hub: [] };
+
+// ─── 時系列グラフ(直近 10 分。時間軸は毎秒流す) ───
+const WINDOW_SEC = 600;
+const SERIES = {
+  camera: { label: 'pi_b(カメラ)', color: '#42a5f5' },
+  display: { label: 'pi_a(LCD)', color: '#ffa726' },
+  hub: { label: 'ハブ(推論)', color: '#66bb6a' },
+};
+const CHARTS = [
+  { id: 'chartTemp', title: '温度 °C', key: 'temp', devices: ['display', 'camera'], min: 40, max: 90, guide: 80 },
+  { id: 'chartCpu', title: 'CPU %', key: 'cpu', devices: ['display', 'camera'], min: 0, max: 100 },
+  { id: 'chartMem', title: 'メモリ %', key: 'memory', devices: ['display', 'camera'], min: 0, max: 100 },
+  { id: 'chartFps', title: 'fps', key: 'fps', devices: ['display', 'camera', 'hub'], min: 0, max: 35 },
+];
+
+function drawChart(chart, now) {
+  const canvas = $(chart.id);
+  if (!canvas) return;
+  const ratio = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
+  if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) {
+    canvas.width = Math.round(w * ratio); canvas.height = Math.round(h * ratio);
   }
-  return div;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const left = 30, right = 6, top = 18, bottom = 14;
+  const pw = w - left - right, ph = h - top - bottom;
+  // 値が範囲を超えたら上限を広げる
+  let max = chart.max;
+  for (const d of chart.devices) for (const p of metrics[d] ?? []) if (p[chart.key] != null) max = Math.max(max, p[chart.key]);
+  const x = (t) => left + (1 - (now - t) / WINDOW_SEC) * pw;
+  const y = (v) => top + ph - (Math.min(max, Math.max(chart.min, v)) - chart.min) / (max - chart.min) * ph;
+
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.fillStyle = '#8a8a8a'; ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 2; i++) {
+    const v = chart.min + (max - chart.min) * i / 2, yy = Math.round(y(v)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(left, yy); ctx.lineTo(left + pw, yy); ctx.stroke();
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(String(Math.round(v)), left - 4, yy);
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (const m of [10, 5, 0]) ctx.fillText(m ? `-${m}分` : '今', x(now - m * 60), top + ph + 2);
+  if (chart.guide != null) {
+    ctx.setLineDash([3, 3]); ctx.strokeStyle = '#ef535099';
+    ctx.beginPath(); ctx.moveTo(left, y(chart.guide)); ctx.lineTo(left + pw, y(chart.guide)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillStyle = '#ddd'; ctx.font = '600 11px system-ui, sans-serif';
+  ctx.fillText(chart.title, 4, 3);
+  let legendX = 4 + ctx.measureText(chart.title).width + 10;
+  ctx.font = '10px system-ui, sans-serif';
+  for (const d of chart.devices) {
+    const series = (metrics[d] ?? []).filter((p) => p[chart.key] != null && now - p.t <= WINDOW_SEC + 5);
+    const last = series.at(-1);
+    const label = `${SERIES[d].label} ${last ? Number(last[chart.key]).toFixed(chart.key === 'temp' ? 1 : 0) : '–'}`;
+    ctx.fillStyle = SERIES[d].color;
+    ctx.fillRect(legendX, 7, 8, 2);
+    ctx.fillText(label, legendX + 11, 3);
+    legendX += 11 + ctx.measureText(label).width + 10;
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(left, top, pw, ph); ctx.clip();
+    ctx.strokeStyle = SERIES[d].color; ctx.lineWidth = 1.5; ctx.beginPath();
+    let prev = null;
+    for (const p of series) {
+      // 6 秒以上途切れたら(切断など)線をつながない
+      if (prev && p.t - prev.t > 6) ctx.moveTo(x(p.t), y(p[chart.key]));
+      else if (prev) ctx.lineTo(x(p.t), y(p[chart.key]));
+      else ctx.moveTo(x(p.t), y(p[chart.key]));
+      prev = p;
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
-function systemLine(sys) {
-  if (!sys) return ['', false];
-  const throttled = sys.throttled ? ` throttled=0x${sys.throttled.toString(16)}` : '';
-  return [`${sys.host ?? ''}  ${n(sys.temp, 1, '°C')}  CPU ${n(sys.cpu, 0, '%')}${throttled}`,
-          (sys.temp ?? 0) >= 80 || (sys.throttled & 0x5) !== 0];
+function drawCharts() {
+  const now = Date.now() / 1000;
+  for (const chart of CHARTS) drawChart(chart, now);
+}
+
+// 温度・CPU・メモリの値と、注意が要るかどうか
+function level(value, warn, alert) { return value == null ? '' : value >= alert ? 'alert' : value >= warn ? 'warnv' : ''; }
+
+function throttleText(bits) {
+  if (bits == null) return ['', ''];
+  // 下位 4 ビット: いま起きている(低電圧・周波数制限・スロットリング・温度による制限)
+  if (bits & 0xF) return ['スロットリング中 0x' + bits.toString(16), 'alert'];
+  if (bits & 0xF0000) return ['起動後にスロットリングあり 0x' + bits.toString(16), 'warnv'];
+  return ['スロットリングなし', ''];
+}
+
+function fmtUptime(sec) {
+  if (sec == null) return '';
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  return `稼働 ${d ? d + '日' : ''}${h}時間${m}分`;
+}
+
+function el(tag, className, text) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function device(name, info, lines) {
+  const div = el('div', 'device');
+  const head = el('b');
+  head.append(el('span', 'dot' + (info.connected ? ' ok' : '')), name);
+  const sys = info.system;
+  if (sys?.host) head.append(el('span', 'kv', sys.host));
+  div.append(head);
+  if (sys && info.connected) {
+    const tiles = el('div', 'tiles');
+    for (const [label, value, text, lv] of [
+      ['温度', sys.temp, n(sys.temp, 1, '°C'), level(sys.temp, 75, 80)],
+      ['CPU', sys.cpu, n(sys.cpu, 0, '%'), level(sys.cpu, 70, 90)],
+      ['メモリ', sys.memory, n(sys.memory, 0, '%'), level(sys.memory, 80, 90)],
+    ]) {
+      const tile = el('div', 'tile ' + lv);
+      tile.append(el('span', 'kv', label), el('span', 'value', text));
+      tiles.append(tile);
+    }
+    div.append(tiles);
+    const [ttext, tlv] = throttleText(sys.throttled);
+    div.append(el('div', 'kv ' + tlv, [ttext, fmtUptime(sys.uptime)].filter(Boolean).join('  ')));
+  }
+  for (const [text, warn] of lines) if (text) div.append(el('div', 'kv' + (warn ? ' warn' : ''), text));
+  return div;
 }
 
 async function refreshState() {
@@ -589,22 +791,14 @@ async function refreshState() {
     else { $('videoMsg').hidden = false; $('videoMsg').textContent = s.camera.connected ? '映像を待っています…' : 'カメラ配信に接続していません'; }
     if (!streaming) { streaming = true; video.src = '/stream.mjpg?t=' + Date.now(); }
 
-    const present = $('present');
-    present.replaceChildren(...s.present.map((p) => {
-      const c = document.createElement('span'); c.className = 'chip';
-      c.textContent = `${p.label}${p.count > 1 ? ' ×' + p.count : ''}(${fmtDur(s.now - p.since)})`; return c;
-    }));
-
     const cam = s.camera.camera ?? {};
     const disp = s.display.display ?? {};
     $('devices').replaceChildren(
-      device('カメラ', s.camera, [
-        systemLine(s.camera.system),
+      device('カメラ(pi_b)', s.camera, [
         [`${cam.running ? '撮影中' : '停止'}  H.264 ${n(cam.fps?.h264, 1, 'fps')} / MJPEG ${n(cam.fps?.mjpeg, 1, 'fps')}`, !cam.running && s.camera.connected],
         ...(cam.error ? [[cam.error, true]] : []),
       ]),
-      device('表示(円形 LCD)', s.display, [
-        systemLine(s.display.system),
+      device('表示・円形 LCD(pi_a)', s.display, [
         [s.display.connected ? `モード ${disp.mode}(表示中: ${disp.showing})  ${n(disp.fps, 1, 'fps')}` : '', false],
       ]),
       device('ハブ(推論)', { connected: true }, [
@@ -623,7 +817,6 @@ async function refreshHistory() {
     $('counts').textContent = h.counts_24h.length ? '24 時間: ' + h.counts_24h.map((c) => `${c.label} ${c.count}`).join('、') : '';
     $('detections').tBodies[0].replaceChildren(...h.detections.map((d) => row(
       [d.label, fmtDate(d.started_at), fmtDur(d.ended_at - d.started_at), String(d.max_count), `${Math.round(d.max_score * 100)}%`])));
-    $('notifications').tBodies[0].replaceChildren(...h.notifications.map((x) => row([fmtDate(x.at), x.source, x.text])));
   } catch (e) { /* 次の周期で再試行 */ }
 }
 
@@ -639,7 +832,57 @@ $('bubbleForm').addEventListener('submit', async (e) => {
   if (text && await post('/api/bubble', { text })) $('bubbleText').value = '';
 });
 
-refreshState(); refreshHistory();
+// ─── 通知のトースト ───
+const TOAST_SEC = 8, MAX_TOASTS = 4;
+const SOURCE_LABEL = { bluesky: 'Bluesky', trends_rss: 'ニュース・トレンド', test: 'テスト' };
+const SOURCE_COLOR = { bluesky: '#0085ff', trends_rss: '#ff6600', test: '#90a4ae' };
+let notifiedUntil = Date.now() / 1000;  // 開く前の通知はトーストにしない
+
+function dismiss(toast) {
+  toast.classList.add('leaving');
+  setTimeout(() => toast.remove(), 300);
+}
+
+function showToast(x) {
+  const box = $('toasts');
+  const toast = el('div', 'toast');
+  toast.style.setProperty('--src', SOURCE_COLOR[x.source] ?? '#90a4ae');
+  toast.append(el('span', 'kv', `${SOURCE_LABEL[x.source] ?? x.source}・${fmtTime(x.at)}`), el('div', '', x.text));
+  toast.addEventListener('click', () => dismiss(toast));
+  box.append(toast);
+  while (box.children.length > MAX_TOASTS) box.firstElementChild.remove();
+  setTimeout(() => dismiss(toast), TOAST_SEC * 1000);
+}
+
+async function pollNotifications() {
+  try {
+    const res = await (await fetch(`/api/notifications?since=${notifiedUntil}`, { cache: 'no-store' })).json();
+    for (const x of res.notifications) {
+      notifiedUntil = Math.max(notifiedUntil, x.at);
+      showToast(x);
+    }
+  } catch (e) { /* 次の周期で */ }
+}
+
+function setDrawer(open) {
+  $('drawer').classList.toggle('open', open);
+  $('drawer').setAttribute('aria-hidden', String(!open));
+  $('drawerOpen').setAttribute('aria-expanded', String(open));
+  if (open) refreshHistory();
+}
+$('drawerOpen').addEventListener('click', () => setDrawer(!$('drawer').classList.contains('open')));
+$('drawerClose').addEventListener('click', () => setDrawer(false));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
+
+async function refreshMetrics() {
+  try { metrics = await (await fetch('/api/metrics', { cache: 'no-store' })).json(); } catch (e) { /* 次の周期で */ }
+}
+
+refreshMetrics().then(drawCharts); refreshState(); refreshHistory();
+setInterval(refreshMetrics, 2000);
+setInterval(pollNotifications, 2000);
+setInterval(drawCharts, 1000);
+window.addEventListener('resize', drawCharts);
 setInterval(refreshState, 1000);
 setInterval(refreshHistory, 5000);
 </script>
@@ -652,7 +895,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='物体検出とダッシュボード(開発 PC で動かす)')
     parser.add_argument('--bind', default='127.0.0.1', help='ダッシュボードの待ち受けアドレス (既定: 127.0.0.1)')
     parser.add_argument('--port', type=int, default=8090, help='ダッシュボードのポート (既定: 8090)')
-    parser.add_argument('--model', type=Path, default=DEFAULT_MODEL, help=f'ONNX モデル (既定: {DEFAULT_MODEL})')
+    parser.add_argument('--model', type=Path,
+                        default=Path(os.environ.get('DESK_MONITOR_MODEL', DEFAULT_MODEL)),
+                        help=f'ONNX モデル (既定: 環境変数 DESK_MONITOR_MODEL、なければ {DEFAULT_MODEL})')
     parser.add_argument('--conf', type=float, default=0.4, help='信頼度しきい値 (既定: 0.4)')
     parser.add_argument('--threads', type=int, default=4, help='推論のスレッド数 (既定: 4)')
     parser.add_argument('--db', type=Path, default=Path(os.environ.get('DESK_MONITOR_DB', DEFAULT_DB)),
@@ -692,7 +937,7 @@ def main() -> None:
         threading.Thread(target=target, daemon=True, name=name).start()
     def housekeeping() -> None:
         while True:
-            time.sleep(1.0)
+            time.sleep(2.0)
             state.expire(time.time())
 
     threading.Thread(target=housekeeping, daemon=True, name='housekeeping').start()

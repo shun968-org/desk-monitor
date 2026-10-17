@@ -66,7 +66,7 @@ def test_hub_session(server, monkeypatch):
         header, _ = reader.read()
         assert header['type'] == 'status'
         assert header['display'] == {'mode': 'face', 'showing': 'face'}
-        assert set(header['system']) == {'host', 'temp', 'cpu', 'throttled'}
+        assert set(header['system']) == {'host', 'temp', 'cpu', 'throttled', 'memory', 'uptime'}
 
         wire.send(sock, {'type': 'mode', 'mode': 'camera'})
         assert wait_until(lambda: rec.modes == ['camera'])
