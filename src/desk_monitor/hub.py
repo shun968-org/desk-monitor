@@ -648,10 +648,22 @@ DASHBOARD_HTML = r"""<!doctype html>
   .layer-button { background: none; border: 0; color: var(--text); padding: 4px 10px; cursor: pointer; }
   .layer-panel { padding: 4px 10px 8px; max-height: 260px; overflow: auto; border-top: 1px solid #ffffff1a; }
   .layer-panel[hidden] { display: none; }
+  /* ツリー: 行の高さとチェックボックスの大きさをそろえ、子の行の左に親から伸びる線(├ └)を引く */
+  .layer-tree { --row: 22px; --box: 14px; --line: #ffffff40; }
   .layer-tree, .layer-tree ul { list-style: none; margin: 0; padding: 0; }
-  .layer-tree ul { padding-left: 18px; }
-  .layer-tree label { display: flex; gap: 6px; align-items: center; cursor: pointer; white-space: nowrap; }
-  .layer-group { font-weight: 600; margin-top: 4px; }
+  .layer-tree > li + li { margin-top: 4px; }
+  .layer-tree label { display: flex; gap: 6px; align-items: center; height: var(--row); cursor: pointer;
+                      white-space: nowrap; }
+  .layer-tree input { width: var(--box); height: var(--box); margin: 0; flex: none; accent-color: #42a5f5; }
+  .layer-group { font-weight: 600; }
+  /* 子のリストは親のチェックボックスの中心(--box の半分)から始め、子のチェックボックスは同じ位置に縦一列で並ぶ */
+  .layer-tree ul { margin-left: calc(var(--box) / 2 - 0.5px); }
+  .layer-tree ul > li { position: relative; padding-left: 14px; }
+  .layer-tree ul > li::before { content: ''; position: absolute; left: 0; top: 0; width: 10px;
+                                height: calc(var(--row) / 2); border-left: 1px solid var(--line);
+                                border-bottom: 1px solid var(--line); }
+  .layer-tree ul > li:not(:last-child)::after { content: ''; position: absolute; left: 0;
+                                top: calc(var(--row) / 2); bottom: 0; border-left: 1px solid var(--line); }
   .temp-icon span { display: inline-block; transform: translate(-50%, -50%); color: #fff; font: 600 11px system-ui, sans-serif;
                     padding: 1px 4px; border-radius: 4px; box-shadow: 0 1px 3px #0008; white-space: nowrap; }
   .gizmo { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; align-items: center;
