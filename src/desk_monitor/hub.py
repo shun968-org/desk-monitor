@@ -593,12 +593,20 @@ DASHBOARD_HTML = r"""<!doctype html>
   .gizmo { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; align-items: center;
            gap: 2px; z-index: 2; }
   .gizmo[hidden] { display: none; }
-  #gizmo { width: 96px; height: 96px; border-radius: 50%; background: #000000a0; border: 1px solid #ffffff40;
-           cursor: grab; touch-action: none; }
-  #gizmo:active { cursor: grabbing; }
-  #gizmo:focus-visible { outline: 2px solid #42a5f5; outline-offset: 2px; }
-  .gizmo-text { font-size: 11px; background: #000000a0; border-radius: 4px; padding: 0 6px; color: #ddd;
-                font-variant-numeric: tabular-nums; }
+  /* 3D ツールの視点ギズモ風: すりガラスの円に、方位の目盛りリングと 3 軸 */
+  #gizmo { width: 112px; height: 112px; border-radius: 50%; cursor: grab; touch-action: none;
+           background: radial-gradient(circle at 35% 30%, #ffffff1f, #ffffff08 60%, #00000033);
+           backdrop-filter: blur(8px) saturate(140%); -webkit-backdrop-filter: blur(8px) saturate(140%);
+           border: 1px solid #ffffff26; box-shadow: 0 6px 20px #00000080, inset 0 1px 0 #ffffff1f;
+           transition: box-shadow .15s ease, border-color .15s ease; }
+  #gizmo:hover, #gizmo.dragging { border-color: #64b5f6aa;
+           box-shadow: 0 6px 24px #00000090, 0 0 0 3px #42a5f533, inset 0 1px 0 #ffffff26; }
+  #gizmo.dragging { cursor: grabbing; }
+  #gizmo:focus-visible { outline: 2px solid #42a5f5; outline-offset: 3px; }
+  .gizmo-text { font: 500 11px/1.6 system-ui, sans-serif; color: #e0e0e0; padding: 0 10px; border-radius: 999px;
+                background: #14161ab3; border: 1px solid #ffffff1a; backdrop-filter: blur(8px);
+                -webkit-backdrop-filter: blur(8px); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+  .gizmo-text b { color: #fff; font-weight: 600; }
   .range-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
   .range { position: relative; flex: 1; height: 22px; }
   .range-track { position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px; background: #333; }
@@ -679,7 +687,8 @@ DASHBOARD_HTML = r"""<!doctype html>
       <canvas id="arOverlay" aria-hidden="true"></canvas>
       <!-- カメラの向きを変える 3 軸のアイコン(ドラッグ: 方位と傾き、Shift+ドラッグかホイール: 回転、矢印キーでも可) -->
       <div class="gizmo" id="gizmoBox">
-        <canvas id="gizmo" tabindex="0" role="slider" aria-label="カメラの向き(左右の矢印で方位、上下で傾き、Shift+左右で回転)"
+        <canvas id="gizmo" tabindex="0" role="slider" title="ドラッグ: 方位と傾き / Shift+ドラッグ・ホイール: 回転 / ダブルクリック: 傾きと回転を 0 に"
+                aria-label="カメラの向き(左右の矢印で方位、上下で傾き、Shift+左右で回転)"
                 aria-valuemin="0" aria-valuemax="359" aria-valuenow="0"></canvas>
         <div class="gizmo-text" id="gizmoText"></div>
       </div>
@@ -1071,35 +1080,75 @@ function drawAr() {
   ctx.fillText(ar.attribution.pois, r.x + 6, r.y + r.h - 4);
 }
 
-// 3 軸のアイコン: 北(赤)・東(緑)・上(青)の軸を、カメラから見た向きで描く
+// 3 軸のアイコン(視点ギズモ): 外周に方位の目盛り、中に北(赤)・東(緑)・上(青)の軸をカメラから見た向きで描く
 function drawGizmo() {
   const canvas = $('gizmo');
   if (!view) return;
-  const size = 96, ratio = window.devicePixelRatio || 1;
-  canvas.width = size * ratio; canvas.height = size * ratio;
+  const size = 112, ratio = window.devicePixelRatio || 1;
+  if (canvas.width !== size * ratio) { canvas.width = size * ratio; canvas.height = size * ratio; }
   const ctx = canvas.getContext('2d');
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, size, size);
-  const basis = cameraBasis(view), c = size / 2, len = 34;
+  const c = size / 2, ringR = c - 9;
+
+  // 方位の目盛りリング(いまの方位が上に来るように回す)
+  ctx.lineCap = 'round';
+  for (let a = 0; a < 360; a += 15) {
+    const t = rad(a - view.heading) - Math.PI / 2;
+    const major = a % 90 === 0, mid = a % 45 === 0;
+    const r1 = ringR - (major ? 0 : mid ? 2 : 3), r2 = ringR + (major ? 0 : 1);
+    if (major) continue;  // 東西南北は文字で示す
+    ctx.strokeStyle = mid ? '#ffffff59' : '#ffffff2e'; ctx.lineWidth = mid ? 1.5 : 1;
+    ctx.beginPath(); ctx.moveTo(c + Math.cos(t) * r1, c + Math.sin(t) * r1);
+    ctx.lineTo(c + Math.cos(t) * r2, c + Math.sin(t) * r2); ctx.stroke();
+  }
+  ctx.font = '600 9px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const [a, label] of [[0, 'N'], [90, 'E'], [180, 'S'], [270, 'W']]) {
+    const t = rad(a - view.heading) - Math.PI / 2;
+    ctx.fillStyle = label === 'N' ? '#ff6b6b' : '#ffffffa0';
+    ctx.fillText(label, c + Math.cos(t) * ringR, c + Math.sin(t) * ringR);
+  }
+  // 上端の目印(カメラが向いている方位)
+  ctx.fillStyle = '#64b5f6';
+  ctx.beginPath(); ctx.moveTo(c - 4, 1); ctx.lineTo(c + 4, 1); ctx.lineTo(c, 6); ctx.closePath(); ctx.fill();
+
+  // 3 軸(正の向きは文字入りの丸、負の向きは白抜きの小さな丸)。奥にある軸から描く
+  const basis = cameraBasis(view), len = 30;
   const axes = [
-    { v: [0, 1, 0], color: '#ef5350', label: 'N' }, { v: [1, 0, 0], color: '#66bb6a', label: 'E' },
-    { v: [0, 0, 1], color: '#42a5f5', label: 'U' },
-  ].map((a) => ({ ...a, sx: dot(a.v, basis.right), sy: dot(a.v, basis.up), depth: dot(a.v, basis.f) }))
-    .sort((a, b) => b.depth - a.depth);  // 奥(カメラの前方)の軸から描く
-  ctx.font = '600 11px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    { v: [0, 1, 0], color: '#ff5f5f', label: 'N' }, { v: [1, 0, 0], color: '#5fd38d', label: 'E' },
+    { v: [0, 0, 1], color: '#5fa8ff', label: 'U' },
+  ].flatMap((a) => [a, { ...a, v: a.v.map((x) => -x), negative: true }])
+    .map((a) => ({ ...a, sx: dot(a.v, basis.right), sy: dot(a.v, basis.up), depth: dot(a.v, basis.f) }))
+    .sort((a, b) => b.depth - a.depth);
   for (const a of axes) {
     const x = c + a.sx * len, y = c - a.sy * len;
-    ctx.globalAlpha = a.depth > 0.3 ? 0.55 : 1;  // カメラの向こうへ伸びる軸は薄く
-    ctx.strokeStyle = a.color; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke();
-    ctx.fillStyle = a.color;
-    ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#fff'; ctx.fillText(a.label, x, y + 0.5);
+    const near = (1 - a.depth) / 2;             // 0: 奥 〜 1: 手前
+    const alpha = 0.45 + 0.55 * near;
+    ctx.globalAlpha = alpha;
+    if (!a.negative) {
+      ctx.strokeStyle = a.color; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke();
+      const r = 7 + 2 * near;
+      const g = ctx.createRadialGradient(x - r / 3, y - r / 3, 1, x, y, r);
+      g.addColorStop(0, '#ffffff'); g.addColorStop(0.25, a.color); g.addColorStop(1, a.color);
+      ctx.shadowColor = '#00000080'; ctx.shadowBlur = 4;
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#0d0f12'; ctx.font = '700 9px system-ui, sans-serif';
+      ctx.fillText(a.label, x, y + 0.5);
+    } else {
+      ctx.strokeStyle = a.color; ctx.lineWidth = 1.5; ctx.fillStyle = '#14161a99';
+      ctx.beginPath(); ctx.arc(x, y, 4 + near, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
   }
   ctx.globalAlpha = 1;
-  $('gizmoText').textContent = `方位 ${Math.round(view.heading)}° 傾き ${Math.round(view.pitch)}° 回転 ${Math.round(view.roll)}°`;
+  // 中心
+  ctx.fillStyle = '#ffffffcc'; ctx.beginPath(); ctx.arc(c, c, 2, 0, Math.PI * 2); ctx.fill();
+
+  const text = `方位 ${Math.round(view.heading)}° ・ 傾き ${Math.round(view.pitch)}° ・ 回転 ${Math.round(view.roll)}°`;
+  $('gizmoText').innerHTML = `方位 <b>${Math.round(view.heading)}°</b> ・ 傾き <b>${Math.round(view.pitch)}°</b> ・ 回転 <b>${Math.round(view.roll)}°</b>`;
   canvas.setAttribute('aria-valuenow', String(Math.round(view.heading)));
-  canvas.setAttribute('aria-valuetext', $('gizmoText').textContent);
+  canvas.setAttribute('aria-valuetext', text);
 }
 
 // 地点から方位・距離だけ進んだ地点(扇形の弧を描くため)
@@ -1195,14 +1244,20 @@ function rotate(dh, dp, dr) {
 
 // アイコンのドラッグ: 左右で方位、上下で傾き、Shift を押しながら左右で回転
 let drag = null;
-$('gizmo').addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, roll: e.shiftKey }; $('gizmo').setPointerCapture(e.pointerId); });
+$('gizmo').addEventListener('pointerdown', (e) => {
+  drag = { x: e.clientX, y: e.clientY, roll: e.shiftKey };
+  $('gizmo').setPointerCapture(e.pointerId);
+  $('gizmo').classList.add('dragging');
+});
 $('gizmo').addEventListener('pointermove', (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   drag.x = e.clientX; drag.y = e.clientY;
   if (drag.roll) rotate(0, 0, dx * 0.3); else rotate(-dx * 0.5, dy * 0.3, 0);
 });
-$('gizmo').addEventListener('pointerup', () => { drag = null; });
+$('gizmo').addEventListener('pointerup', () => { drag = null; $('gizmo').classList.remove('dragging'); });
+// ダブルクリックで傾きと回転を 0 に戻す(方位はそのまま)
+$('gizmo').addEventListener('dblclick', () => { if (view) { view.pitch = 0; view.roll = 0; changed(); } });
 $('gizmo').addEventListener('wheel', (e) => { e.preventDefault(); rotate(0, 0, Math.sign(e.deltaY)); }, { passive: false });
 $('gizmo').addEventListener('keydown', (e) => {
   const step = e.altKey ? 0.2 : 1;
