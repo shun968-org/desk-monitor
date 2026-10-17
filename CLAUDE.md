@@ -2,43 +2,54 @@
 
 ## このリポジトリ
 
-Raspberry Pi で動くデスクトップモニタ「desk-monitor」のソース一式。Pi は 2 台で、役割(role)が違う。
+Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」のソース一式。機器は 3 台で、役割(role)が違う
+(構成の判断は [ADR-0001](docs/adr/0001-split-camera-display-and-inference-hub.md))。
 
-- `pi_a`(node-a-local): 表示プロセスとトレンド監視(role `display`)。LCD・カメラが付いている
-- `pi_b`(node-b-local、192.168.10.111): ブラウザ向けダッシュボード(role `dashboard`)。pi_a から映像を受けて LAN 内に配信する
+| 機器 | role | 内容 | サービス |
+|---|---|---|---|
+| `pi_a`(node-a-local、192.168.10.113) | display | 円形 LCD(GC9A01)の表示とトレンド監視 | `desk-monitor-display` / `desk-monitor-trend` |
+| `pi_b`(node-b-local、192.168.10.111) | camera | カメラ(ov5647)の映像を H.264 / MJPEG で配信 | `desk-monitor-camera` |
+| 開発 PC(この PC) | hub | 物体検出(YOLO11n、入力 640)とダッシュボード(http://127.0.0.1:8090/) | Docker(`deploy/hub/`) |
 
-**正はこのリポジトリ**であり、Pi への反映は `scripts/deploy.sh [host] [role]`(既定 `pi_a`。`pi_b` なら role は `dashboard`)で行う。
-rsync で `~/desk-monitor/` に配置し、(display のみ)`~/desk-monitor/.venv` を更新して systemd ユーザーサービスを再起動する。
-Pi 上のファイルを直接編集・`scp` しない(次の deploy で上書き・削除される)。
-ログは `journalctl _SYSTEMD_USER_UNIT=desk-monitor-display.service`(Pi では `journalctl --user` が使えない)。
+映像は pi_b → pi_a(MJPEG 320x240)と pi_b → ハブ(H.264 640x480)に流れ、検出結果(全視野に対する 0〜1 の座標)は
+ハブ → pi_a に流れる。ハブが止まっていても LCD は枠なしで映像を出す。
+
+**正はこのリポジトリ**であり、Pi への反映は `scripts/deploy.sh [host] [role]`(`pi_a` は display、`pi_b` は camera が既定)、
+ハブは `scripts/deploy-hub.sh` で行う。Pi は rsync で `~/desk-monitor/` に配置し、(display のみ)`~/desk-monitor/.venv` を
+更新して systemd ユーザーサービスを再起動する。Pi 上のファイルを直接編集・`scp` しない(次の deploy で上書き・削除される)。
+ログは Pi では `journalctl _SYSTEMD_USER_UNIT=desk-monitor-display.service`(`journalctl --user` が使えない)、
+ハブは `scripts/deploy-hub.sh logs -f hub`。
+
+機器間の接続は共有トークンで認証し、プライベート IP 以外からの接続は拒否する(`wire.py`)。トークンと接続先は各機器の
+`~/.config/desk-monitor/desk-monitor.env`(600)にあり、リポジトリには置かない。作り直しと配布は `scripts/setup-secrets.sh`
+(Pi の IP が変わったときも再実行する)。
 
 ソースは `src/desk_monitor/` パッケージ。systemd からは `PYTHONPATH=src` で `python -m desk_monitor.<module>` として起動する。
 
-- `display.py`: 表示プロセスのエントリポイント。GC9A01 ディスプレイ(240x240)に表情アニメーションまたはカメラ映像を表示する。
-  systemd ユーザーサービス `desk-monitor-display`(`deploy/systemd/display/`)として動く。モード切替は SIGUSR1(face)/ SIGUSR2(camera)
-  - `lcd.py`(GC9A01 ドライバ。全ツールで共用)、`face.py`(表情アニメーション)、`bubble.py`(吹き出しと通知用 Unix ソケット)、
-    `camera.py`(Picamera2)、`fonts.py`、`paths.py`(素材・設定・モデルの場所)
-  - `detector.py`: camera モードの物体検出(YOLO11n / ONNX Runtime)。モデル(`models/yolo11n.onnx`、git 管理外)は
-    `scripts/export_yolo.sh` で生成し、`scripts/deploy.sh` が Pi に配置する
-- `feed.py`(pi_a)/ `dashboard.py`(pi_b): camera 表示中の映像(カメラの全視野 640x480、検出枠つき)を LAN 内のブラウザに配信する。
-  カメラは全視野で取得し、物体検出も全視野で行う。LCD には中央の正方形を 240x240 に縮小して出す(`camera.to_lcd`)。
-  pi_a は pi_b の feed ポート(8081)に外向きに接続し、閲覧者がいるときだけ JPEG を送る(pi_a は待ち受けポートを開かない)。
-  pi_b は HTTP 8080 で MJPEG を配信する(Basic 認証、プライベート IP 以外は拒否)。`dashboard.py` は標準ライブラリだけで動き、
-  pi_b では venv を使わない。systemd ユーザーサービス `desk-monitor-dashboard`(`deploy/systemd/dashboard/`)
-  - パスワードと共有トークンは各 Pi の `~/.config/desk-monitor/{dashboard,feed}.env`(600)に置き、リポジトリには置かない。
-    設定は `scripts/setup-dashboard.sh`(パスワードを入力するので、ユーザーが自分の端末で実行する)
-- `trend.py`: Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセスに吹き出し通知を送る。
-  設定は `config/trend_config.json`。systemd ユーザーサービス `desk-monitor-trend` として動く
+- `display.py`(pi_a): 表示プロセスのエントリポイント。GC9A01(240x240)に表情アニメーションまたはカメラ映像を表示する。
+  モード切替は SIGUSR1(face)/ SIGUSR2(camera)か、ハブのダッシュボードから
+  - `remote_camera.py`(pi_b の MJPEG を受ける)、`camera.py`(この Pi に直接付けたカメラ。`to_lcd` で全視野の中央を切り出す)、
+    `control.py`(ハブからの検出結果・操作を受ける制御口 8083)、`lcd.py`(GC9A01 ドライバ)、`face.py`(表情)、
+    `bubble.py`(吹き出しと通知用 Unix ソケット)、`fonts.py`、`paths.py`、`sysstat.py`(温度・CPU)
+- `camera_server.py`(pi_b): ハードウェアエンコーダで H.264 / MJPEG を作り、ポート 8082 で配る。picamera2 は apt、venv は使わない。
+  映像の向きは `--vflip` / `--hflip`
+- `hub.py`(開発 PC): H.264 を復号(PyAV)して推論し(`detector.py`、ONNX Runtime)、結果を pi_a に送る。
+  ダッシュボードは 127.0.0.1 だけで待ち受け、履歴は `~/.local/share/desk-monitor/hub.sqlite3`。
+  モデル(`models/yolo11n.onnx`、git 管理外)は `scripts/export_yolo.sh` で作る
+- `trend.py`(pi_a): Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセスに吹き出し通知を送る。
+  設定は `config/trend_config.json`
+- `wire.py`: 機器間の通信(JSON ヘッダ + ペイロード、hello でトークン認証)
 - `tools/show_camera.py` / `tools/show_image.py`: カメラ・画像表示の単発ユーティリティ(表示サービスを止めてから使う)
 - 素材は `assets/`(`faces/` の表情画像、`fonts/` の IPAex ゴシックとライセンス)
-- ハードウェア依存(spidev / gpiozero / picamera2 / onnxruntime)の import は使う箇所まで遅延させ、
+- ハードウェア依存(spidev / gpiozero / picamera2 / onnxruntime / av)の import は使う箇所まで遅延させ、
   それ以外のモジュールは開発機・CI で import できるようにしておく
 
 ## 依存関係
 
 - `requirements.txt`: コンテナ・開発機でも入る依存
-- `requirements-dev.txt`: テスト用(pytest など)。Pi には入れない
-- `requirements-pi.txt`: Pi 実機専用(gpiozero, spidev, picamera2, onnxruntime 等)。両サービスとも `~/desk-monitor/.venv` で動く
+- `requirements-dev.txt`: テスト用(pytest など。ハブの依存も含む)。Pi には入れない
+- `requirements-pi.txt`: 表示用の Pi(pi_a)専用(gpiozero, spidev 等)。pi_a の両サービスは `~/desk-monitor/.venv` で動く
+- `requirements-hub.txt`: ハブ(onnxruntime, av)。`deploy/hub/Dockerfile` で入れる
 - スマホアプリとの連携はない前提(mDNS / WebSocket の制御サーバと BLE プロビジョニングは削除済み)
 - Python は Pi と同じ 3.13 系
 
@@ -65,7 +76,7 @@ Pi 上のファイルを直接編集・`scp` しない(次の deploy で上書�
 - 機密(`.ssh`, `.aws`, `.credentials*`, `secrets/`)は sandbox と permissions の両方で読み取りを拒否している
 - `.env` はエージェントが読める(編集は拒否)。**運用ルール: `.env` にはエージェント向けの認証情報(`NOTION_API_TOKEN`)だけを書く。
   人間用・本番用の資格情報は置かない**。これがセキュリティの前提
-- Pi 専用ハードウェア(SPI/GPIO/カメラ)はコンテナでは動かない。実機検証は `pi_a` で行う
+- Pi 専用ハードウェア(SPI/GPIO/カメラ)はコンテナでは動かない。実機検証は `pi_a`(LCD)と `pi_b`(カメラ)で行う
 - `ssh pi_a` / `scp` はホストの `~/.ssh` を引き継いで使う。`devcontainer.json` の `mounts` で
   `~/.ssh-host` に読み取り専用でマウントし、起動のたび(`postStartCommand`)に `sync-host-ssh.sh` が
   `~/.ssh` へコピーしてパーミッションを直す(直接マウントしないのは、所有者・モードのずれと `known_hosts` の追記のため)
