@@ -13,9 +13,11 @@ TOKEN = 'token'
 def test_overlay_converts_to_pixels_and_expires():
     overlay = control.DetectionOverlay()
     overlay.update([{'x1': 0.25, 'y1': 0.5, 'x2': 0.5, 'y2': 1.0, 'score': 0.8, 'cls': 15},
+                    {'x1': 0, 'y1': 0, 'x2': 1, 'y2': 1, 'score': 0.7, 'cls': 54, 'label': 'ペン'},
                     {'x1': 'bad'}, 'not a dict'], now=100.0)
-    [det] = overlay.latest(640, 480, now=100.5)
-    assert (det.x1, det.y1, det.x2, det.y2, det.class_id) == (160, 240, 320, 480, 15)
+    det, pen = overlay.latest(640, 480, now=100.5)
+    assert (det.x1, det.y1, det.x2, det.y2, det.class_id, det.label) == (160, 240, 320, 480, 15, '猫')
+    assert pen.label == 'ペン'  # ハブが付けた種類名(Objects365 など)をそのまま使う
     assert overlay.latest(640, 480, now=100.0 + control.DETECTION_STALE_SEC + 0.1) == []
     overlay.update('not a list')
     assert overlay.latest(640, 480) == []

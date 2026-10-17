@@ -29,6 +29,9 @@ def raw_output(boxes: list[tuple[float, float, float, float, int, float]]) -> np
 
 def test_labels_cover_coco_classes():
     assert len(detector.COCO_LABELS_JA) == 80
+    assert len(detector.OBJ365_LABELS_JA) == 365
+    assert detector.OBJ365_LABELS_JA[0] == '人' and detector.OBJ365_LABELS_JA[106] == 'キーボード'
+    assert Detection(0, 0, 1, 1, 0.9, 5, 'ペン').label == 'ペン'
     assert Detection(0, 0, 1, 1, 0.9, 0).label == '人'
     assert Detection(0, 0, 1, 1, 0.9, 99).label == '#99'
 
@@ -225,9 +228,21 @@ def test_dfine_detector_resizes_and_filters():
     assert session.fed['orig_target_sizes'].tolist() == [[1280, 960]]
 
 
+def test_dfine_obj365_labels_start_at_one():
+    labels = np.array([[1, 0, 107, 366]])  # 0 と範囲外は使われない番号
+    boxes = np.array([[[0, 0, 10, 10]] * 4], dtype=np.float32)
+    scores = np.array([[0.9, 0.9, 0.8, 0.9]], dtype=np.float32)
+    d = detector.DFineDetector(FakeSession([labels, boxes, scores]), labels=detector.OBJ365_LABELS_JA,
+                               first_label=1)
+    dets = d.detect(np.zeros((48, 64, 3), dtype=np.uint8))
+    assert [(x.class_id, x.label) for x in dets] == [(0, '人'), (106, 'キーボード')]
+
+
 def test_load_detector_picks_model_type(monkeypatch):
     monkeypatch.setattr(detector, '_create_session', lambda path, threads: FakeSession())
     assert isinstance(detector.load_detector('m.onnx'), detector.DFineDetector)
+    obj365 = detector.load_detector('models/dfine_l_obj365.onnx')
+    assert obj365._labels is detector.OBJ365_LABELS_JA and obj365._first_label == 1
     yolo_session = FakeSession(inputs=('images',))
     monkeypatch.setattr(detector, '_create_session', lambda path, threads: yolo_session)
     assert isinstance(detector.load_detector('m.onnx'), detector.YoloDetector)

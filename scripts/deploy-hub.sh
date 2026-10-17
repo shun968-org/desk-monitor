@@ -4,7 +4,7 @@
 #   ダッシュボード: http://127.0.0.1:8090/
 #
 # 前提: scripts/setup-secrets.sh で ~/.config/desk-monitor/desk-monitor.env を作ってあること、
-#       モデル(既定 models/dfine_l_obj2coco.onnx。DESK_MONITOR_MODEL で変更)があること(scripts/export_dfine.sh で作る)
+#       モデル(既定 models/dfine_l_obj365.onnx。DESK_MONITOR_MODEL で変更)があること(scripts/export_dfine.sh で作る)
 #
 # 使い方: scripts/deploy-hub.sh [docker compose の追加引数(例: logs -f)]
 

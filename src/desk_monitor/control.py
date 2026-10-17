@@ -4,7 +4,7 @@
 通信の形式は wire.py。
 
   ハブ → 表示
-    {"type": "detections", "items": [{"x1", "y1", "x2", "y2", "score", "cls"}, ...]}
+    {"type": "detections", "items": [{"x1", "y1", "x2", "y2", "score", "cls", "label"}, ...]}
         座標は全視野に対する 0〜1。DETECTION_STALE_SEC 届かなければ枠を消す
     {"type": "mode", "mode": "face" | "camera"}
   表示 → ハブ
@@ -40,9 +40,11 @@ class DetectionOverlay:
         valid = []
         for item in items if isinstance(items, list) else []:
             try:
+                label = item.get('label')
                 valid.append({k: float(item[k]) for k in ('x1', 'y1', 'x2', 'y2', 'score')}
-                             | {'cls': int(item['cls'])})
-            except (KeyError, TypeError, ValueError):
+                             | {'cls': int(item['cls']),
+                                'label': label[:40] if isinstance(label, str) else None})
+            except (AttributeError, KeyError, TypeError, ValueError):
                 continue
         with self._lock:
             self._items = valid
@@ -56,7 +58,7 @@ class DetectionOverlay:
                 return []
             items = list(self._items)
         return [Detection(i['x1'] * width, i['y1'] * height, i['x2'] * width, i['y2'] * height,
-                          i['score'], i['cls']) for i in items]
+                          i['score'], i['cls'], i['label']) for i in items]
 
 
 class DisplayControl:
