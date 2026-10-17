@@ -585,7 +585,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   .kv { color: var(--muted); font-size: 12px; }
   .warn { color: var(--warn); }
   /* 右の列の残りの高さを、選んだ機器の 3 つのグラフで分ける */
-  .charts { flex: 1.2 1 0; display: flex; flex-direction: column; }
+  .charts { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .map-section { flex: 1 1 0; min-height: 220px; display: flex; flex-direction: column; }
   #map { flex: 1; min-height: 160px; border-radius: 6px; background: #222; }
   #arInfo { margin-top: 4px; }
@@ -640,11 +640,15 @@ DASHBOARD_HTML = r"""<!doctype html>
             transform: translateX(100%); transition: transform .2s ease; }
   .drawer.open { transform: none; box-shadow: -8px 0 24px #0008; }
   .drawer-body { height: 100%; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
-  .drawer-tab { position: absolute; top: 50%; right: 100%; transform: translateY(-50%);
-                writing-mode: vertical-rl; letter-spacing: .1em; padding: 14px 6px;
+  .drawer-tabs { position: absolute; top: 50%; right: 100%; transform: translateY(-50%);
+                 display: flex; flex-direction: column; gap: 6px; }
+  .drawer-tab { writing-mode: vertical-rl; letter-spacing: .1em; padding: 14px 6px;
                 background: var(--panel); color: var(--text); border: 1px solid var(--line); border-right: 0;
                 border-radius: 8px 0 0 8px; box-shadow: -2px 0 8px #0006; }
-  .drawer-tab:hover, .drawer.open .drawer-tab { background: #263238; }
+  .drawer-tab:hover { background: #263238; }
+  .drawer-tab[aria-expanded="true"] { background: #263238; border-left: 3px solid #42a5f5; }
+  .drawer-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+  .drawer-panel[hidden] { display: none; }
   @media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
   .drawer-head { display: flex; align-items: center; justify-content: space-between; }
   .drawer-head h2 { margin: 0; }
@@ -706,34 +710,41 @@ DASHBOARD_HTML = r"""<!doctype html>
       </div>
       <div class="kv" id="arInfo"></div>
     </section>
-    <section class="charts">
-      <div class="device-tabs" role="tablist" aria-label="機器">
-        <button role="tab" id="tab-display" data-device="display" aria-selected="true" aria-controls="chartsPanel">pi_a(LCD)</button>
-        <button role="tab" id="tab-camera" data-device="camera" aria-selected="false" aria-controls="chartsPanel" tabindex="-1">pi_b(カメラ)</button>
-        <button role="tab" id="tab-hub" data-device="hub" aria-selected="false" aria-controls="chartsPanel" tabindex="-1">開発PC</button>
-      </div>
-      <div class="chart-panel" id="chartsPanel" role="tabpanel" aria-labelledby="tab-display">
-        <canvas id="chartTemp" aria-label="温度の推移"></canvas>
-        <canvas id="chartCpu" aria-label="CPU 使用率の推移"></canvas>
-        <canvas id="chartMem" aria-label="メモリ使用率の推移"></canvas>
-      </div>
-    </section>
   </div>
 </main>
 <!-- 通知のトースト。読み上げはするがフォーカスは移さない(フォーカスを受け取る要素を置かない) -->
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
-<!-- サイドパネル(通常は閉じておき、ヘッダーのボタンで開く) -->
+<!-- サイドパネル(通常は閉じておき、画面の右端のタブで開く。タブごとに中身を切り替える) -->
 <aside class="drawer" id="drawer" aria-labelledby="drawerTitle">
   <!-- 画面の右端に出ているタブ。パネルの左端に付いていて、開くと一緒に動く -->
-  <button class="drawer-tab" id="drawerTab" aria-controls="drawerBody" aria-expanded="false">検出履歴</button>
+  <div class="drawer-tabs">
+    <button class="drawer-tab" data-panel="historyPanel" aria-controls="drawerBody" aria-expanded="false">検出履歴</button>
+    <button class="drawer-tab" data-panel="metricsPanel" aria-controls="drawerBody" aria-expanded="false">メトリクス</button>
+  </div>
   <div class="drawer-body" id="drawerBody" inert>
     <div class="drawer-head">
       <h2 id="drawerTitle">検出履歴</h2>
       <button id="drawerClose" aria-label="閉じる">×</button>
     </div>
-    <div class="kv" id="counts"></div>
-    <div class="scroll">
-      <table id="detections"><thead><tr><th>種類</th><th>時刻</th><th>長さ</th><th>数</th><th>信頼度</th></tr></thead><tbody></tbody></table>
+    <div class="drawer-panel" id="historyPanel" data-title="検出履歴">
+      <div class="kv" id="counts"></div>
+      <div class="scroll">
+        <table id="detections"><thead><tr><th>種類</th><th>時刻</th><th>長さ</th><th>数</th><th>信頼度</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+    <div class="drawer-panel" id="metricsPanel" data-title="メトリクス(直近 10 分)" hidden>
+      <div class="charts">
+        <div class="device-tabs" role="tablist" aria-label="機器">
+          <button role="tab" id="tab-display" data-device="display" aria-selected="true" aria-controls="chartsPanel">pi_a(LCD)</button>
+          <button role="tab" id="tab-camera" data-device="camera" aria-selected="false" aria-controls="chartsPanel" tabindex="-1">pi_b(カメラ)</button>
+          <button role="tab" id="tab-hub" data-device="hub" aria-selected="false" aria-controls="chartsPanel" tabindex="-1">開発PC</button>
+        </div>
+        <div class="chart-panel" id="chartsPanel" role="tabpanel" aria-labelledby="tab-display">
+          <canvas id="chartTemp" aria-label="温度の推移"></canvas>
+          <canvas id="chartCpu" aria-label="CPU 使用率の推移"></canvas>
+          <canvas id="chartMem" aria-label="メモリ使用率の推移"></canvas>
+        </div>
+      </div>
     </div>
   </div>
 </aside>
@@ -905,15 +916,27 @@ async function pollNotifications() {
   } catch (e) { /* 次の周期で */ }
 }
 
-function setDrawer(open) {
-  $('drawer').classList.toggle('open', open);
-  $('drawerBody').inert = !open;  // 閉じている間は中身にフォーカスが入らないようにする
-  $('drawerTab').setAttribute('aria-expanded', String(open));
-  if (open) refreshHistory();
+// サイドパネル: タブごとに中身を切り替える。開いているタブをもう一度押すと閉じる
+const drawerTabs = [...document.querySelectorAll('.drawer-tab')];
+let drawerPanel = null;  // 開いているパネルの id(閉じていれば null)
+let lastDrawerTab = drawerTabs[0];
+function setDrawer(panelId) {
+  drawerPanel = panelId;
+  $('drawer').classList.toggle('open', !!panelId);
+  $('drawerBody').inert = !panelId;  // 閉じている間は中身にフォーカスが入らないようにする
+  for (const tab of drawerTabs) tab.setAttribute('aria-expanded', String(tab.dataset.panel === panelId));
+  for (const panel of document.querySelectorAll('.drawer-panel')) panel.hidden = panel.id !== panelId;
+  if (panelId) $('drawerTitle').textContent = $(panelId).dataset.title;
+  if (panelId === 'historyPanel') refreshHistory();
+  if (panelId === 'metricsPanel') drawCharts();
 }
-$('drawerTab').addEventListener('click', () => setDrawer(!$('drawer').classList.contains('open')));
-$('drawerClose').addEventListener('click', () => { setDrawer(false); $('drawerTab').focus(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('drawer').classList.contains('open')) { setDrawer(false); $('drawerTab').focus(); } });
+function closeDrawer() { setDrawer(null); lastDrawerTab.focus(); }
+for (const tab of drawerTabs) tab.addEventListener('click', () => {
+  lastDrawerTab = tab;
+  setDrawer(drawerPanel === tab.dataset.panel ? null : tab.dataset.panel);
+});
+$('drawerClose').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawerPanel) closeDrawer(); });
 
 // 機器のタブ(左右の矢印キーでも切り替える)
 const deviceTabs = [...document.querySelectorAll('[role="tab"][data-device]')];
