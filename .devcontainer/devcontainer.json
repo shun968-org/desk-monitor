@@ -1,0 +1,33 @@
+{
+  "name": "desk-monitor",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": [
+    "--security-opt",
+    "apparmor=unconfined",
+    "--security-opt",
+    "seccomp=unconfined",
+    "--env-file",
+    "${localWorkspaceFolder}/.env"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=claude-code-config-${devcontainerId},target=/home/vscode/.claude,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh-host,type=bind,readonly"
+  ],
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude"
+  },
+  "remoteEnv": {
+    "PATH": "/home/vscode/.local/bin:${containerEnv:PATH}"
+  },
+  "postCreateCommand": "git config --global --add safe.directory /workspace && npm install && pip install --user -r /workspace/requirements.txt && bash /workspace/.devcontainer/wrap-claude-cli.sh",
+  "postStartCommand": "bash /workspace/.devcontainer/sync-host-ssh.sh"
+}

@@ -1,0 +1,19 @@
+pre-commit:
+  jobs:
+    - name: branch-name
+      run: scripts/check-branch-name.sh
+    - name: adr-format
+      glob: "docs/adr/*.md"
+      run: scripts/check-adr-format.sh {staged_files}
+    - name: no-secrets
+      run: scripts/check-no-secrets.sh {staged_files}
+
+prepare-commit-msg:
+  jobs:
+    - name: suggest-commit-msg
+      run: scripts/suggest-commit-msg.sh {1}
+
+commit-msg:
+  jobs:
+    - name: commitlint
+      run: npx --no -- commitlint --edit {1}

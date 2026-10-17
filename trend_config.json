@@ -1,0 +1,24 @@
+{
+  "keywords": ["地震", "速報", "台風", "津波", "原油", "イラク", "戦争", "crude oil", "Iraq", "war"],
+  "socket_path": "/tmp/show_face.sock",
+  "cooldown_seconds": 300,
+  "bubble_duration_seconds": 12,
+  "bluesky": {
+    "enabled": true,
+    "url": "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post",
+    "window_seconds": 60,
+    "threshold": 10
+  },
+  "trends_rss": {
+    "enabled": true,
+    "poll_interval_seconds": 120,
+    "google_trends_geo": "japan",
+    "google_trends_hl": "ja-JP",
+    "use_pytrends": true,
+    "rss_feeds": [
+      "https://www3.nhk.or.jp/rss/news/cat0.xml",
+      "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
+    ],
+    "rss_item_window_minutes": 10
+  }
+}
