@@ -260,3 +260,47 @@ def test_dashboard_ar_view_update(ar_dashboard):
     assert _request(addr, 'POST', '/api/ar/view', {'pitch': 200}, hdr)[0] == 400
     assert _request(addr, 'POST', '/api/ar/view', {'heading': 0})[0] == 403  # 独自ヘッダがない
     assert _request(addr, 'POST', '/api/ar/view', [1, 2], hdr)[0] == 400
+
+
+class FakeLayers:
+    ATTRIBUTION = {'gsi': 'g'}
+
+    def __init__(self):
+        from desk_monitor import layers as L
+
+        def fetch(url):
+            if '/14/' in url:
+                raise __import__('urllib.error').error.HTTPError(url, 404, 'nf', None, None)
+            return b'\x89PNG'
+
+        self.dem = L.DemTileCache(fetch=fetch)
+        self.boundaries = type('B', (), {'data': {'lines': [{'level': 4, 'name': '県', 'points': []}]}, 'error': None})()
+        self.amedas = type('A', (), {'data': {'time': 't', 'stations': []}, 'error': None})()
+        self.nowcast = type('N', (), {'get': lambda self: {'basetime': 'b', 'validtime': 'v'}})()
+
+
+def test_dashboard_layer_endpoints(tmp_path):
+    state = hub.HubState(hub.History(':memory:'))
+    srv = hub.DashboardServer(('127.0.0.1', 0), state, hub.DisplayLink(('127.0.0.1', 1), 't', state),
+                              None, FakeLayers())
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    addr = srv.server_address
+    try:
+        status, body = _request(addr, 'GET', '/tiles/dem/12/3635/1617.png')
+        assert status == 200 and body == b'\x89PNG'
+        assert _request(addr, 'GET', '/tiles/dem/14/1/1.png')[0] == 404     # 海
+        assert _request(addr, 'GET', '/tiles/dem/20/1/1.png')[0] == 400     # 範囲外
+        assert _request(addr, 'GET', '/tiles/dem/../etc/passwd')[0] == 404
+        assert json.loads(_request(addr, 'GET', '/api/layers/boundaries')[1])['lines'][0]['name'] == '県'
+        assert json.loads(_request(addr, 'GET', '/api/layers/amedas')[1])['time'] == 't'
+        assert json.loads(_request(addr, 'GET', '/api/layers/nowcast')[1])['latest']['basetime'] == 'b'
+        assert _request(addr, 'GET', '/api/layers/unknown')[0] == 404
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_layer_endpoints_without_ar(dashboard):
+    _, _, addr = dashboard
+    assert _request(addr, 'GET', '/api/layers/amedas')[0] == 404
+    assert _request(addr, 'GET', '/tiles/dem/12/1/1.png')[0] == 404
