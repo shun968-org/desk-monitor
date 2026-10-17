@@ -4,4 +4,3 @@ numpy==2.2.4
 pillow==11.1.0
 pytrends==4.9.2
 websockets==15.0.1
-zeroconf==0.147.0

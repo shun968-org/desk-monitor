@@ -1,5 +1,5 @@
 # Raspberry Pi 実機専用(コンテナでは入らない)。-r requirements.txt を含む。
-# dbus-python / PyGObject(gi) は apt(python3-dbus, python3-gi)で入れ、venv は --system-site-packages で作る。
+# venv は apt で入る libcamera 等を使うため --system-site-packages で作る(~/otomo_venv)。
 # 物体検出の onnxruntime は pip で入れる。apt の python3-onnxruntime は Pi 3 (Cortex-A53) で
 # import 時に Illegal instruction で落ちるため使わない。
 -r requirements.txt

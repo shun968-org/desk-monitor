@@ -1,0 +1,23 @@
+# GC9A01 ディスプレイに表情・カメラ映像を表示する常駐プロセス(show_face.py)。
+# systemd のユーザーサービスとして動かす。
+#
+# 配置: cp deploy/systemd/desk-monitor-display.service ~/.config/systemd/user/
+#       systemctl --user daemon-reload && systemctl --user enable --now desk-monitor-display
+# モード切替: systemctl --user kill --kill-whom=main -s SIGUSR1 desk-monitor-display  (face)
+#             systemctl --user kill --kill-whom=main -s SIGUSR2 desk-monitor-display  (camera)
+
+[Unit]
+Description=desk-monitor display (GC9A01 face / camera with object detection)
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=%h/otomo_venv/bin/python3 %h/show_face.py
+# show_face.py は SIGINT(KeyboardInterrupt)で LCD とカメラを閉じてから終了する
+KillSignal=SIGINT
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
