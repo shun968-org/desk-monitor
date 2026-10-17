@@ -609,6 +609,8 @@ DASHBOARD_HTML = r"""<!doctype html>
 <title>desk-monitor</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.control.layers.tree@1.2.0/L.Control.Layers.Tree.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet.control.layers.tree@1.2.0/L.Control.Layers.Tree.js"></script>
 <style>
   :root { color-scheme: dark; --bg: #111; --panel: #1b1b1b; --line: #2a2a2a; --text: #ddd;
           --muted: #8a8a8a; --ok: #4caf50; --warn: #ffb300; --ng: #ef5350; }
@@ -642,28 +644,27 @@ DASHBOARD_HTML = r"""<!doctype html>
          isolation: isolate; }
   #arInfo { margin-top: 4px; }
   #arOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  /* 地図のレイヤの操作パネル(Leaflet のコントロール) */
-  .layer-control { background: #1b1b1bee; color: var(--text); border: 1px solid #ffffff26; border-radius: 8px;
-                   box-shadow: 0 4px 14px #0008; font: 12px/1.5 system-ui, sans-serif; }
-  .layer-button { background: none; border: 0; color: var(--text); padding: 4px 10px; cursor: pointer; }
-  .layer-panel { padding: 4px 10px 8px; max-height: 260px; overflow: auto; border-top: 1px solid #ffffff1a; }
-  .layer-panel[hidden] { display: none; }
-  /* ツリー: 行の高さとチェックボックスの大きさをそろえ、子の行の左に親から伸びる線(├ └)を引く */
-  .layer-tree { --row: 22px; --box: 14px; --line: #ffffff40; }
-  .layer-tree, .layer-tree ul { list-style: none; margin: 0; padding: 0; }
-  .layer-tree > li + li { margin-top: 4px; }
-  .layer-tree label { display: flex; gap: 6px; align-items: center; height: var(--row); cursor: pointer;
-                      white-space: nowrap; }
-  .layer-tree input { width: var(--box); height: var(--box); margin: 0; flex: none; accent-color: #42a5f5; }
-  .layer-group { font-weight: 600; }
-  /* 子のリストは親のチェックボックスの中心(--box の半分)から始め、子のチェックボックスは同じ位置に縦一列で並ぶ */
-  .layer-tree ul { margin-left: calc(var(--box) / 2 - 0.5px); }
-  .layer-tree ul > li { position: relative; padding-left: 14px; }
-  .layer-tree ul > li::before { content: ''; position: absolute; left: 0; top: 0; width: 10px;
-                                height: calc(var(--row) / 2); border-left: 1px solid var(--line);
-                                border-bottom: 1px solid var(--line); }
-  .layer-tree ul > li:not(:last-child)::after { content: ''; position: absolute; left: 0;
-                                top: calc(var(--row) / 2); bottom: 0; border-left: 1px solid var(--line); }
+  /* 地図のレイヤの操作パネル(leaflet.control.layers.tree)。行の高さと記号の欄の幅をそろえ、
+     どの階層でもチェックボックスが縦一列に並ぶようにし、子の行の左に親から伸びる線(├ └)を引く */
+  .leaflet-control-layers { --row: 22px; --sym: 12px; --box: 14px; --line: #ffffff40;
+                            background: #1b1b1bee; color: var(--text); border: 1px solid #ffffff26 !important;
+                            border-radius: 8px; box-shadow: 0 4px 14px #0008; font: 12px/1.5 system-ui, sans-serif; }
+  .leaflet-control-layers-expanded { padding: 6px 10px 8px; max-height: 300px; overflow: auto; }
+  .leaflet-control-layers-separator { border-top-color: #ffffff1a; }
+  .leaflet-layerstree-header { display: flex; align-items: center; height: var(--row); white-space: nowrap; }
+  .leaflet-layerstree-expand-collapse, .leaflet-layerstree-header-space {
+    flex: none; width: var(--sym); text-align: center; color: var(--muted); }
+  .leaflet-layerstree-header label, .leaflet-layerstree-header-label { display: flex; align-items: center; gap: 6px; }
+  .leaflet-layerstree-header input { width: var(--box); height: var(--box); margin: 0 !important; flex: none;
+                                     accent-color: #42a5f5; }
+  .leaflet-layerstree-node > .leaflet-layerstree-header .leaflet-layerstree-header-name { font-weight: 400; }
+  .leaflet-layerstree-children { padding-left: 0; margin-left: calc(var(--sym) + var(--box) / 2 - 0.5px); }
+  .leaflet-layerstree-children > .leaflet-layerstree-node { position: relative; padding-left: 10px; }
+  .leaflet-layerstree-children > .leaflet-layerstree-node::before {
+    content: ''; position: absolute; left: 0; top: 0; width: calc(10px + var(--sym) - 2px);
+    height: calc(var(--row) / 2); border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .leaflet-layerstree-children > .leaflet-layerstree-node:not(:last-child)::after {
+    content: ''; position: absolute; left: 0; top: calc(var(--row) / 2); bottom: 0; border-left: 1px solid var(--line); }
   .temp-icon span { display: inline-block; transform: translate(-50%, -50%); color: #fff; font: 600 11px system-ui, sans-serif;
                     padding: 1px 4px; border-radius: 4px; box-shadow: 0 1px 3px #0008; white-space: nowrap; }
   .gizmo { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; align-items: center;
@@ -1366,22 +1367,8 @@ const ATTR = {
   osm: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
   jma: '<a href="https://www.jma.go.jp/" target="_blank" rel="noopener">気象庁</a>',
 };
-// radio: 子のうち 1 つだけを選ぶ(背景の地図)
-const LAYER_TREE = [
-  { id: 'base', label: '背景の地図', radio: true, children: [
-    { id: 'base-std', label: '標準地図' }, { id: 'base-pale', label: '淡色地図' }, { id: 'base-photo', label: '航空写真' }] },
-  { id: 'tourism', label: '観光', children: [
-    { id: 'ar-pois', label: '観光地' }, { id: 'ar-sector', label: '表示範囲(扇形)' }] },
-  { id: 'terrain', label: '地形', children: [
-    { id: 'contour', label: '等高線' }, { id: 'hillshade', label: '陰影起伏' }, { id: 'relief', label: '色別標高' }] },
-  { id: 'boundary', label: '境界', children: [
-    { id: 'pref', label: '都道府県境' }, { id: 'city', label: '市区町村境' }] },
-  { id: 'population', label: '人口', children: [{ id: 'did', label: '人口集中地区(2020 年)' }] },
-  { id: 'weather', label: '気象', children: [
-    { id: 'temp', label: '気温(アメダス)' }, { id: 'rain', label: '雨雲(降水ナウキャスト)' }] },
-];
-const DEFAULT_LAYERS = ['base-std', 'ar-pois', 'ar-sector'];
 const LAYER_KEY = 'desk-monitor.map-layers';
+const DEFAULT_LAYERS = ['base-std', 'ar-pois', 'ar-sector'];
 
 function loadLayerChoice() {
   try {
@@ -1492,113 +1479,63 @@ async function rainUrl() {
   return t ? `https://www.jma.go.jp/bosai/jmatile/data/nowc/${t.basetime}/none/${t.validtime}/surf/hrpns/{z}/{x}/{y}.png` : null;
 }
 
-// レイヤの id → Leaflet のレイヤ(必要になったときに作る)
-const LAYER_FACTORY = {
-  'base-std': () => L.tileLayer(GSI('std'), { maxZoom: 18, attribution: ATTR.gsi }),
-  'base-pale': () => L.tileLayer(GSI('pale'), { maxZoom: 18, attribution: ATTR.gsi }),
-  'base-photo': () => L.tileLayer(GSI('seamlessphoto', 'jpg'), { maxZoom: 18, attribution: ATTR.gsi }),
-  'ar-pois': () => map.poiLayer,
-  'ar-sector': () => map.sectorLayer,
-  contour: () => new ContourLayer({ maxNativeZoom: 14, minZoom: 9, attribution: ATTR.gsi, zIndex: 3 }),
-  hillshade: () => L.tileLayer(GSI('hillshademap'), { maxNativeZoom: 16, maxZoom: 18, opacity: 0.45, attribution: ATTR.gsi, zIndex: 2 }),
-  relief: () => L.tileLayer(GSI('relief'), { maxNativeZoom: 15, maxZoom: 18, opacity: 0.5, attribution: ATTR.gsi, zIndex: 2 }),
-  did: () => L.tileLayer(GSI('did2020'), { maxNativeZoom: 16, maxZoom: 18, opacity: 0.6, attribution: ATTR.gsi, zIndex: 3 }),
-  pref: () => { const g = L.layerGroup(); g.getAttribution = () => ATTR.osm; fillBoundaries(g, 4); return g; },
-  city: () => { const g = L.layerGroup(); g.getAttribution = () => ATTR.osm; fillBoundaries(g, 7); return g; },
-  temp: () => {
-    const g = L.layerGroup(); g.getAttribution = () => ATTR.jma;
-    fillTemps(g);
-    g.timer = setInterval(() => fillTemps(g), 10 * 60 * 1000);
-    return g;
-  },
-  rain: () => {
-    // 最新の時刻が分かるまでは透明な画像を指しておく(空の URL だとこのページ自体を読みに行く)
-    const blank = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
-    const layer = L.tileLayer(blank, { maxNativeZoom: 10, maxZoom: 18, opacity: 0.7, attribution: ATTR.jma, zIndex: 4 });
-    const update = async () => { const url = await rainUrl(); if (url) layer.setUrl(url); };
-    update();
-    layer.timer = setInterval(update, 5 * 60 * 1000);
-    return layer;
-  },
-};
-const mapLayers = {};
-
-function applyLayers(ids) {
-  for (const group of LAYER_TREE) {
-    for (const item of group.children) {
-      const on = ids.has(item.id);
-      if (on && !mapLayers[item.id]) mapLayers[item.id] = LAYER_FACTORY[item.id]();
-      const layer = mapLayers[item.id];
-      if (!layer) continue;
-      if (on && !map.hasLayer(layer)) layer.addTo(map);
-      if (!on && map.hasLayer(layer)) map.removeLayer(layer);
-    }
-  }
-  map.sectorLayer.bringToFront?.();
+// 地図に出し入れしたときにデータを読み込む・定期的に更新するレイヤ
+function dataLayer(attribution, fill, intervalMs) {
+  const group = L.layerGroup();
+  group.getAttribution = () => attribution;
+  group.on('add', () => {
+    fill(group);
+    if (intervalMs) group.timer = setInterval(() => fill(group), intervalMs);
+  });
+  group.on('remove', () => clearInterval(group.timer));
+  return group;
 }
 
-// ツリーのチェックボックスで選ぶ操作パネル(地図の右上)
-function layerTreeControl(ids) {
-  const Control = L.Control.extend({
-    onAdd() {
-      const box = L.DomUtil.create('div', 'layer-control');
-      const button = L.DomUtil.create('button', 'layer-button', box);
-      button.type = 'button'; button.textContent = 'レイヤ';
-      button.setAttribute('aria-expanded', 'false');
-      const panel = L.DomUtil.create('div', 'layer-panel', box);
-      panel.hidden = true;
-      panel.id = 'layerPanel';
-      button.setAttribute('aria-controls', panel.id);
-      button.addEventListener('click', () => {
-        panel.hidden = !panel.hidden;
-        button.setAttribute('aria-expanded', String(!panel.hidden));
-      });
-      const tree = L.DomUtil.create('ul', 'layer-tree', panel);
-      tree.setAttribute('role', 'tree');
-      tree.setAttribute('aria-label', '地図のレイヤ');
-      for (const group of LAYER_TREE) {
-        const li = L.DomUtil.create('li', '', tree);
-        li.setAttribute('role', 'treeitem');
-        li.setAttribute('aria-expanded', 'true');
-        const head = L.DomUtil.create('label', 'layer-group', li);
-        const parent = document.createElement('input');
-        parent.type = 'checkbox';
-        if (group.radio) parent.disabled = true;  // 背景はどれか 1 つを必ず出す
-        head.append(parent, ` ${group.label}`);
-        const ul = L.DomUtil.create('ul', '', li);
-        ul.setAttribute('role', 'group');
-        const inputs = group.children.map((item) => {
-          const row = L.DomUtil.create('li', '', ul);
-          row.setAttribute('role', 'treeitem');
-          const label = L.DomUtil.create('label', '', row);
-          const input = document.createElement('input');
-          input.type = group.radio ? 'radio' : 'checkbox';
-          input.name = group.radio ? `layer-${group.id}` : '';
-          input.checked = ids.has(item.id);
-          input.dataset.layer = item.id;
-          label.append(input, ` ${item.label}`);
-          return input;
-        });
-        const syncParent = () => {
-          const on = inputs.filter((i) => i.checked).length;
-          parent.checked = on === inputs.length || (group.radio && on > 0);
-          parent.indeterminate = !group.radio && on > 0 && on < inputs.length;
-        };
-        const commit = () => {
-          for (const i of inputs) (i.checked ? ids.add : ids.delete).call(ids, i.dataset.layer);
-          syncParent(); saveLayerChoice(ids); applyLayers(ids);
-        };
-        for (const i of inputs) i.addEventListener('change', commit);
-        // 親を押すと、子をまとめて入れる/切る
-        parent.addEventListener('change', () => { for (const i of inputs) i.checked = parent.checked; commit(); });
-        syncParent();
-      }
-      L.DomEvent.disableClickPropagation(box);
-      L.DomEvent.disableScrollPropagation(box);
-      return box;
-    },
-  });
-  return new Control({ position: 'topright' });
+function rainLayer() {
+  // 最新の時刻が分かるまでは透明な画像を指しておく(空の URL だとこのページ自体を読みに行く)
+  const blank = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+  const layer = L.tileLayer(blank, { maxNativeZoom: 10, maxZoom: 18, opacity: 0.7, attribution: ATTR.jma, zIndex: 4 });
+  const update = async () => { const url = await rainUrl(); if (url) layer.setUrl(url); };
+  layer.on('add', () => { update(); layer.timer = setInterval(update, 5 * 60 * 1000); });
+  layer.on('remove', () => clearInterval(layer.timer));
+  return layer;
+}
+
+// レイヤの一覧(id はブラウザに保存する選択の識別子)
+function buildLayers() {
+  const gsi = (name, opts, ext) => L.tileLayer(GSI(name, ext), { maxZoom: 18, attribution: ATTR.gsi, ...opts });
+  return {
+    'base-std': gsi('std'),
+    'base-pale': gsi('pale'),
+    'base-photo': gsi('seamlessphoto', {}, 'jpg'),
+    'ar-pois': map.poiLayer,
+    'ar-sector': map.sectorLayer,
+    contour: new ContourLayer({ maxNativeZoom: 14, minZoom: 9, attribution: ATTR.gsi, zIndex: 3 }),
+    hillshade: gsi('hillshademap', { maxNativeZoom: 16, opacity: 0.45, zIndex: 2 }),
+    relief: gsi('relief', { maxNativeZoom: 15, opacity: 0.5, zIndex: 2 }),
+    did: gsi('did2020', { maxNativeZoom: 16, opacity: 0.6, zIndex: 3 }),
+    pref: dataLayer(ATTR.osm, (g) => fillBoundaries(g, 4)),
+    city: dataLayer(ATTR.osm, (g) => fillBoundaries(g, 7)),
+    temp: dataLayer(ATTR.jma, fillTemps, 10 * 60 * 1000),
+    rain: rainLayer(),
+  };
+}
+
+// leaflet.control.layers.tree に渡すツリー(selectAllCheckbox: 親のチェックボックスで子をまとめて切り替える)
+function layerTrees(layers) {
+  const node = (label, ids) => ({ label, selectAllCheckbox: true, children: ids.map(([id, name]) => ({ label: name, layer: layers[id] })) });
+  return {
+    base: { label: '背景の地図', children: [
+      { label: '標準地図', layer: layers['base-std'] }, { label: '淡色地図', layer: layers['base-pale'] },
+      { label: '航空写真', layer: layers['base-photo'] }] },
+    overlays: { label: '重ねる情報', selectAllCheckbox: true, children: [
+      node('観光', [['ar-pois', '観光地'], ['ar-sector', '表示範囲(扇形)']]),
+      node('地形', [['contour', '等高線'], ['hillshade', '陰影起伏'], ['relief', '色別標高']]),
+      node('境界', [['pref', '都道府県境'], ['city', '市区町村境']]),
+      node('人口', [['did', '人口集中地区(2020 年)']]),
+      node('気象', [['temp', '気温(アメダス)'], ['rain', '雨雲(降水ナウキャスト)']]),
+    ] },
+  };
 }
 
 function initMap() {
@@ -1607,10 +1544,17 @@ function initMap() {
   map.sectorLayer = L.layerGroup();
   map.poiLayer = L.layerGroup();
   map.poiLayer.getAttribution = () => ATTR.osm;
+  const layers = buildLayers();
   const ids = loadLayerChoice();
-  if (!LAYER_TREE[0].children.some((c) => ids.has(c.id))) ids.add('base-std');
-  layerTreeControl(ids).addTo(map);
-  applyLayers(ids);
+  if (!['base-std', 'base-pale', 'base-photo'].some((id) => ids.has(id))) ids.add('base-std');
+  // 保存していた選択を先に地図へ出しておくと、操作パネルのチェックがそれに合う
+  for (const [id, layer] of Object.entries(layers)) if (ids.has(id)) layer.addTo(map);
+  const trees = layerTrees(layers);
+  L.control.layers.tree(trees.base, trees.overlays, {
+    collapsed: true, closedSymbol: '▸', openedSymbol: '▾', spaceSymbol: '',
+  }).addTo(map);
+  const save = () => saveLayerChoice(new Set(Object.keys(layers).filter((id) => map.hasLayer(layers[id]))));
+  map.on('overlayadd overlayremove baselayerchange', save);
 }
 
 // 距離の範囲のバー(2 つのつまみ)
