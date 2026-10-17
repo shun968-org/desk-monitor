@@ -14,7 +14,7 @@ from desk_monitor import trend
 def test_config_has_required_keys():
     cfg = trend._load_config()
     assert cfg['keywords']
-    for key in ('socket_path', 'cooldown_seconds', 'bubble_duration_seconds'):
+    for key in ('socket_path', 'cooldown_seconds'):
         assert key in cfg
     for key in ('url', 'window_seconds', 'threshold'):
         assert key in cfg['bluesky']
@@ -93,14 +93,14 @@ def test_notify_sends_json_line(tmp_path):
 
         t = threading.Thread(target=serve)
         t.start()
-        trend._notify(path, '地震速報', 'bluesky', 12)
+        trend._notify(path, '地震速報', 'bluesky')
         t.join(timeout=3)
 
     assert received[0].endswith(b'\n')
     assert json.loads(received[0]) == {
-        'cmd': 'bubble', 'text': '地震速報', 'source': 'bluesky', 'duration': 12}
+        'cmd': 'notify', 'text': '地震速報', 'source': 'bluesky'}
 
 
 def test_notify_failure_only_warns(tmp_path, caplog):
-    trend._notify(str(tmp_path / 'missing.sock'), 'x', 'bluesky', 1)
+    trend._notify(str(tmp_path / 'missing.sock'), 'x', 'bluesky')
     assert '通知送信失敗' in caplog.text

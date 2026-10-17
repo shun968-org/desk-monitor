@@ -1,0 +1,4 @@
+# ハブ(開発 PC、role hub)の依存。deploy/hub/Dockerfile で入れる。
+-r requirements.txt
+onnxruntime==1.31.0
+av==18.1.0

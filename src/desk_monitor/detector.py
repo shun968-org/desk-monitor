@@ -1,15 +1,18 @@
 """YOLO (ONNX) による物体検出と、検出枠・ラベルの描画。
 
-display.py の camera モードから使う。推論は別スレッド (DetectionWorker) で
-最新フレームに対して繰り返し実行し、表示ループは直近の検出結果を重ねて描くだけ
-にすることで、推論が遅い Raspberry Pi 3 でも表示のフレームレートを落とさない。
+推論はハブ(hub.py、開発 PC)で行い、検出枠の描画は表示プロセス(display.py)とハブの両方で使う。
+推論はカメラの全視野に対して行い、円形 LCD(中央の正方形)には to_region で座標を移してから描く。
+推論は別スレッド (DetectionWorker) で最新フレームに対して繰り返し実行し、呼び出し側は
+直近の検出結果を重ねて描くだけにすることで、推論が映像のフレームレートを落とさないようにする。
 
-モデルは Ultralytics YOLO11n を入力 256x256 で ONNX に書き出したものを想定する
-（出力 (1, 84, N): 先頭 4 行が cx, cy, w, h、残り 80 行が COCO 各クラスのスコア）。
-書き出し手順は scripts/export_yolo.sh を参照。
+モデルは ONNX で、load_detector が入力名から種類を判別する(入力サイズはモデルから読む)。
+  - YOLO11(Ultralytics): 出力 (1, 84, N)。先頭 4 行が cx, cy, w, h、残り 80 行が COCO 各クラスのスコア。
+    書き出しは scripts/export_yolo.sh
+  - D-FINE(DETR 系): 入力 images と orig_target_sizes、出力 labels / boxes / scores。
+    書き出しは scripts/export_dfine.sh
 
 依存パッケージ:
-    pip install onnxruntime  # apt の python3-onnxruntime は Pi 3 で SIGILL になるため使わない
+    pip install onnxruntime
 """
 from __future__ import annotations
 
@@ -61,24 +64,83 @@ class Detection:
         return f'#{self.class_id}'
 
 
+def _create_session(model_path: Path, num_threads: int):
+    import onnxruntime as ort  # 検出を使うときだけ必要なので遅延 import
+
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = num_threads
+    opts.inter_op_num_threads = 1
+    # 既定ではワーカースレッドが待機中もスピンして CPU を使い続けるため、待機中は眠らせる
+    opts.add_session_config_entry('session.intra_op.allow_spinning', '0')
+    return ort.InferenceSession(str(model_path), sess_options=opts,
+                                providers=['CPUExecutionProvider'])
+
+
+def load_detector(model_path: Path, conf_threshold: float = 0.4, num_threads: int = 4):
+    """ONNX モデルの入力から種類を判別して、YOLO か D-FINE の検出器を作る。"""
+    session = _create_session(model_path, num_threads)
+    names = {i.name for i in session.get_inputs()}
+    if 'orig_target_sizes' in names:
+        return DFineDetector(session, conf_threshold=conf_threshold)
+    return YoloDetector(model_path, conf_threshold=conf_threshold, session=session)
+
+
+def _letterbox(rgb: np.ndarray, width: int, height: int, pad_value: int
+               ) -> tuple[np.ndarray, float, int, int]:
+    """アスペクト比を保って縮小し、余白を pad_value で埋めて width x height にする。"""
+    h, w = rgb.shape[:2]
+    scale = min(width / w, height / h)
+    new_w, new_h = round(w * scale), round(h * scale)
+    if (new_w, new_h) != (w, h):
+        rgb = np.asarray(Image.fromarray(rgb).resize((new_w, new_h), Image.BILINEAR))
+    pad_x, pad_y = (width - new_w) // 2, (height - new_h) // 2
+    canvas = np.full((height, width, 3), pad_value, dtype=np.uint8)
+    canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = rgb
+    return canvas, scale, pad_x, pad_y
+
+
+class DFineDetector:
+    """D-FINE(DETR 系)の ONNX モデルで 1 フレームを推論する。
+
+    出力は信頼度の高い順に 300 件(labels: 0〜79、boxes: 入力画素の xyxy、scores)で、NMS は要らない。
+    """
+
+    def __init__(self, session, conf_threshold: float = 0.4, max_detections: int = 20) -> None:
+        self._session = session
+        inp = next(i for i in session.get_inputs() if i.name == 'images')
+        self._input_h, self._input_w = int(inp.shape[2]), int(inp.shape[3])
+        self.conf_threshold = conf_threshold
+        self.max_detections = max_detections
+
+    def detect(self, rgb: np.ndarray) -> list[Detection]:
+        # D-FINE の評価時の前処理と同じく、アスペクト比を保たずに入力サイズへ引き伸ばす。
+        # orig_target_sizes に元の [W, H] を渡すと、枠は元の画像の画素座標で返る
+        img_h, img_w = rgb.shape[:2]
+        resized = np.asarray(Image.fromarray(rgb).resize((self._input_w, self._input_h), Image.BILINEAR))
+        tensor = resized.transpose(2, 0, 1)[np.newaxis].astype(np.float32) / 255.0
+        sizes = np.array([[img_w, img_h]], dtype=np.int64)
+        labels, boxes, scores = self._session.run(
+            ['labels', 'boxes', 'scores'], {'images': tensor, 'orig_target_sizes': sizes})
+        detections = []
+        for label, box, score in zip(labels[0], boxes[0], scores[0]):
+            if score < self.conf_threshold:
+                continue
+            x1, y1, x2, y2 = box.tolist()
+            x1, x2 = max(0.0, x1), min(img_w - 1.0, x2)
+            y1, y2 = max(0.0, y1), min(img_h - 1.0, y2)
+            if x2 > x1 and y2 > y1:
+                detections.append(Detection(x1, y1, x2, y2, float(score), int(label)))
+        detections.sort(key=lambda d: d.score, reverse=True)
+        return detections[:self.max_detections]
+
+
 class YoloDetector:
     """YOLO の ONNX モデルで 1 フレームを推論する。"""
 
     def __init__(self, model_path: Path, conf_threshold: float = 0.4,
                  iou_threshold: float = 0.45, max_detections: int = 10,
-                 num_threads: int = 3) -> None:
-        import onnxruntime as ort  # 検出を使うときだけ必要なので遅延 import
-
-        opts = ort.SessionOptions()
-        # 4 コアのうち 1 つは表示ループ（SPI 転送）に残す
-        opts.intra_op_num_threads = num_threads
-        opts.inter_op_num_threads = 1
-        # 既定ではワーカースレッドが待機中もスピンして CPU を使い続け、推論を間引いても
-        # 発熱が下がらないため、待機中は眠らせる
-        opts.add_session_config_entry('session.intra_op.allow_spinning', '0')
-        self._session = ort.InferenceSession(
-            str(model_path), sess_options=opts, providers=['CPUExecutionProvider'],
-        )
+                 num_threads: int = 3, session=None) -> None:
+        self._session = session or _create_session(model_path, num_threads)
         inp = self._session.get_inputs()[0]
         self._input_name = inp.name
         self._input_h, self._input_w = int(inp.shape[2]), int(inp.shape[3])
@@ -94,15 +156,7 @@ class YoloDetector:
 
     def _preprocess(self, rgb: np.ndarray) -> tuple[np.ndarray, float, int, int]:
         """アスペクト比を保って縮小し、余白を灰色で埋めて入力サイズに合わせる。"""
-        h, w = rgb.shape[:2]
-        scale = min(self._input_w / w, self._input_h / h)
-        new_w, new_h = round(w * scale), round(h * scale)
-        if (new_w, new_h) != (w, h):
-            rgb = np.asarray(Image.fromarray(rgb).resize((new_w, new_h), Image.BILINEAR))
-        pad_x = (self._input_w - new_w) // 2
-        pad_y = (self._input_h - new_h) // 2
-        canvas = np.full((self._input_h, self._input_w, 3), _PAD_VALUE, dtype=np.uint8)
-        canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = rgb
+        canvas, scale, pad_x, pad_y = _letterbox(rgb, self._input_w, self._input_h, _PAD_VALUE)
         tensor = canvas.transpose(2, 0, 1)[np.newaxis].astype(np.float32) / 255.0
         return tensor, scale, pad_x, pad_y
 
@@ -165,8 +219,11 @@ class DetectionWorker:
     # 推論間隔が長いと次の結果が届く前に消えて点滅するため、間隔の 2 倍は保持する
     STALE_SEC = 1.5
 
-    def __init__(self, detector: YoloDetector, min_interval: float = 0.0) -> None:
+    def __init__(self, detector: YoloDetector, min_interval: float = 0.0,
+                 on_result=None) -> None:
+        """on_result: 推論が終わるたびに on_result(frame, detections) を推論スレッドで呼ぶ。"""
         self._detector = detector
+        self._on_result = on_result
         # 推論の開始間隔の下限（秒）。連続推論による発熱で Pi がスロットリングしないよう間引く
         self._min_interval = min_interval
         self._stale_sec = max(self.STALE_SEC, 2 * min_interval)
@@ -210,6 +267,29 @@ class DetectionWorker:
                 self._detections = detections
                 self._detected_at = now
                 self.inference_sec = now - start
+            if self._on_result is not None:
+                try:
+                    self._on_result(frame, detections)
+                except Exception as exc:
+                    print(f'検出結果の処理に失敗しました: {exc!r}', flush=True)
+
+
+def to_region(detections: list[Detection], x0: int, y0: int, side: int,
+              out_size: int) -> list[Detection]:
+    """全視野の座標の検出結果を、正方形の領域 (x0, y0, side) を out_size に縮小した画の座標に移す。
+
+    領域からはみ出す枠は領域の端で切り、領域と重ならない枠は捨てる。
+    """
+    scale = out_size / side
+    mapped = []
+    for d in detections:
+        x1, y1 = max(d.x1, x0), max(d.y1, y0)
+        x2, y2 = min(d.x2, x0 + side - 1), min(d.y2, y0 + side - 1)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        mapped.append(Detection((x1 - x0) * scale, (y1 - y0) * scale,
+                                (x2 - x0) * scale, (y2 - y0) * scale, d.score, d.class_id))
+    return mapped
 
 
 def _clamp_into_circle(x: float, y: float, w: float, h: float,
@@ -229,8 +309,11 @@ def _clamp_into_circle(x: float, y: float, w: float, h: float,
 
 
 def draw_detections(arr: np.ndarray, detections: list[Detection],
-                    font: ImageFont.ImageFont) -> np.ndarray:
-    """検出枠と「ラベル 信頼度%」を arr に描いて返す。"""
+                    font: ImageFont.ImageFont, circular: bool = True) -> np.ndarray:
+    """検出枠と「ラベル 信頼度%」を arr に描いて返す。
+
+    circular: 円形 LCD 向け。ラベルを円の中に収まるよう左右にずらす
+    """
     if not detections:
         return arr
     img = Image.fromarray(arr)
@@ -247,7 +330,8 @@ def draw_detections(arr: np.ndarray, detections: list[Detection],
         lx, ly = det.x1, det.y1 - th
         if ly < 0:
             lx, ly = det.x1 + 2, det.y1 + 2
-        lx, ly = _clamp_into_circle(lx, ly, tw, th, size)
+        if circular:
+            lx, ly = _clamp_into_circle(lx, ly, tw, th, size)
         draw.rectangle([lx, ly, lx + tw, ly + th], fill=color)
         # 明るい背景色には黒文字、暗い背景色には白文字
         luminance = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]

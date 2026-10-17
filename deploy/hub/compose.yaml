@@ -1,0 +1,27 @@
+# ハブを開発 PC で常駐させる。scripts/deploy-hub.sh から使う。
+#   ダッシュボード: http://127.0.0.1:8090/
+#   設定: ~/.config/desk-monitor/desk-monitor.env(scripts/setup-secrets.sh で作る)
+#   履歴: ~/.local/share/desk-monitor/hub.sqlite3
+name: desk-monitor
+
+services:
+  hub:
+    build:
+      context: ../..
+      dockerfile: deploy/hub/Dockerfile
+    # LAN の Pi に接続し、ダッシュボードは 127.0.0.1 だけで待ち受けるため、ホストのネットワークを使う
+    network_mode: host
+    env_file:
+      - ${HOME}/.config/desk-monitor/desk-monitor.env
+    environment:
+      DESK_MONITOR_DB: /data/hub.sqlite3
+      # 実行ユーザーのホームがコンテナにないため、ライブラリの書き込み先を /tmp にする
+      HOME: /tmp
+      TZ: Asia/Tokyo
+    user: "${HUB_UID:-1000}:${HUB_GID:-1000}"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../assets:/app/assets:ro
+      - ../../models:/app/models:ro
+      - ${HOME}/.local/share/desk-monitor:/data
+    restart: unless-stopped

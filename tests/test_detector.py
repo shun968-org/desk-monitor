@@ -111,6 +111,27 @@ def test_worker_returns_latest_and_drops_stale(blank_frame):
     assert worker.latest(time.time() + 10) == []  # 古い結果は出さない
 
 
+def test_worker_calls_result_callback(blank_frame):
+    det = Detection(1, 2, 3, 4, 0.9, 0)
+    results = []
+    worker = detector.DetectionWorker(FakeDetector([det]),
+                                      on_result=lambda frame, dets: results.append((frame, dets)))
+    worker.submit(blank_frame)
+    assert _wait_until(lambda: results)
+    assert results[0][0] is blank_frame and results[0][1] == [det]
+
+
+def test_worker_survives_callback_errors(blank_frame):
+    def boom(frame, dets):
+        raise RuntimeError('callback failed')
+    fake = FakeDetector()
+    worker = detector.DetectionWorker(fake, on_result=boom)
+    worker.submit(blank_frame)
+    assert _wait_until(lambda: fake.calls >= 1)
+    worker.submit(blank_frame)
+    assert _wait_until(lambda: fake.calls >= 2)  # 例外のあとも推論を続ける
+
+
 def test_worker_stale_window_scales_with_interval():
     worker = detector.DetectionWorker(FakeDetector(), min_interval=2.0)
     assert worker._stale_sec == 4.0
@@ -139,6 +160,28 @@ def test_clamp_outside_circle_is_unchanged():
     assert detector._clamp_into_circle(5, 0, 20, 10, 240) == (5, 0)
 
 
+def test_to_region_maps_and_clips_to_lcd_square():
+    dets = [
+        Detection(100, 100, 300, 200, 0.9, 0),   # 中央の正方形の中
+        Detection(0, 50, 120, 100, 0.8, 1),      # 左端がはみ出す
+        Detection(0, 0, 60, 40, 0.7, 2),         # 正方形の外(LCD には出ない)
+    ]
+    mapped = detector.to_region(dets, 80, 0, 480, 240)
+    assert [(d.class_id, d.x1, d.y1, d.x2, d.y2) for d in mapped] == [
+        (0, 10.0, 50.0, 110.0, 100.0),
+        (1, 0.0, 25.0, 20.0, 50.0),
+    ]
+    assert mapped[0].score == 0.9
+
+
+def test_draw_detections_without_circle_clamp():
+    full = np.zeros((480, 640, 3), dtype=np.uint8)
+    det = Detection(0, 300, 100, 400, 0.9, 0)
+    out = detector.draw_detections(full, [det], get_font(16), circular=False)
+    assert out.shape == full.shape
+    assert out[299, 1].any()  # ラベルは枠の左上にそのまま置かれる(円の中へずらさない)
+
+
 def test_draw_detections(blank_frame):
     assert detector.draw_detections(blank_frame, [], get_font(13)) is blank_frame
     out = detector.draw_detections(
@@ -146,3 +189,45 @@ def test_draw_detections(blank_frame):
     assert out.shape == blank_frame.shape
     assert out[140, 60].any()  # 枠の左辺
     assert not out[140, 120].any()  # 枠の内側は塗らない
+
+
+class FakeSession:
+    """onnxruntime.InferenceSession の代わり。D-FINE と同じ入出力を持つ。"""
+
+    def __init__(self, outputs=None, inputs=('images', 'orig_target_sizes')) -> None:
+        self._inputs = inputs
+        self._outputs = outputs
+        self.fed = None
+
+    def get_inputs(self):
+        return [type('I', (), {'name': n, 'shape': [1, 3, 640, 640] if n == 'images' else [1, 2]})()
+                for n in self._inputs]
+
+    def run(self, names, feed):
+        self.fed = feed
+        return self._outputs
+
+
+def test_dfine_detector_resizes_and_filters():
+    # 枠はモデルが元の画像の画素座標で返す(orig_target_sizes に元の [W, H] を渡す)
+    labels = np.array([[15, 0, 2]])
+    boxes = np.array([[[128, 96, 640, 480], [0, 0, 10, 10], [-5, 100, 2000, 200]]], dtype=np.float32)
+    scores = np.array([[0.9, 0.2, 0.5]], dtype=np.float32)
+    session = FakeSession([labels, boxes, scores])
+    d = detector.DFineDetector(session, conf_threshold=0.4)
+    rgb = np.full((960, 1280, 3), 255, dtype=np.uint8)
+    dets = d.detect(rgb)
+    assert [x.class_id for x in dets] == [15, 2]  # 信頼度の高い順、しきい値未満は除く
+    assert (dets[0].x1, dets[0].y1, dets[0].x2, dets[0].y2) == pytest.approx((128, 96, 640, 480))
+    assert (dets[1].x1, dets[1].x2) == (0.0, 1279.0)  # 画像の外ははみ出さない
+    assert session.fed['images'].shape == (1, 3, 640, 640)
+    assert session.fed['images'][0, 0, 0, 0] == pytest.approx(1.0)  # 余白なしで引き伸ばす
+    assert session.fed['orig_target_sizes'].tolist() == [[1280, 960]]
+
+
+def test_load_detector_picks_model_type(monkeypatch):
+    monkeypatch.setattr(detector, '_create_session', lambda path, threads: FakeSession())
+    assert isinstance(detector.load_detector('m.onnx'), detector.DFineDetector)
+    yolo_session = FakeSession(inputs=('images',))
+    monkeypatch.setattr(detector, '_create_session', lambda path, threads: yolo_session)
+    assert isinstance(detector.load_detector('m.onnx'), detector.YoloDetector)

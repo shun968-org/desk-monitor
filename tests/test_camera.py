@@ -40,7 +40,7 @@ class FakePicamera2:
     def capture_array(self) -> np.ndarray:
         if FakePicamera2.fail_on_capture:
             raise RuntimeError('capture failed')
-        frame = np.zeros((240, 240, 3), dtype=np.uint8)
+        frame = np.zeros((camera.CAPTURE_HEIGHT, camera.CAPTURE_WIDTH, 3), dtype=np.uint8)
         frame[0, 0] = (1, 2, 3)  # B, G, R
         return frame
 
@@ -62,11 +62,38 @@ def fake_picamera2(monkeypatch):
 def test_frame_converts_bgr_and_flips_vertically(clock):
     source = camera.CameraSource()
     frame = source.frame()
-    assert frame.shape == (240, 240, 3)
+    assert frame.shape == (480, 640, 3)  # 全視野(4:3)
     # 上下反転で左上の画素は左下に移り、BGR → RGB で並びが逆になる
     assert tuple(frame[-1, 0]) == (3, 2, 1)
     cam = FakePicamera2.instances[0]
-    assert cam.started and cam.config == {'size': (240, 240), 'format': 'RGB888'}
+    assert cam.started and cam.config == {'size': (640, 480), 'format': 'RGB888'}
+
+
+def test_to_lcd_crops_center_square_and_downscales():
+    full = np.zeros((480, 640, 3), dtype=np.uint8)
+    full[:, :80] = 255   # 左右の帯は LCD に出ない
+    full[:, 560:] = 255
+    full[0:2, 80:82] = (40, 80, 120)  # 中央の正方形の左上 2x2 画素
+    full[2:4, 80:82] = (0, 0, 0)
+    lcd = camera.to_lcd(full)
+    assert lcd.shape == (240, 240, 3) and lcd.dtype == np.uint8
+    assert tuple(lcd[0, 0]) == (40, 80, 120)  # 2x2 画素の平均
+    assert not lcd[1:, 1:-1].any()
+    assert camera.lcd_region(480, 640) == (80, 0, 480)
+
+
+def test_to_lcd_crops_remote_frame_without_scaling():
+    # カメラ配信サーバの MJPEG(320x240)は中央の 240x240 を切り出すだけ
+    full = np.zeros((240, 320, 3), dtype=np.uint8)
+    full[:, 40:280] = 9
+    lcd = camera.to_lcd(full)
+    assert lcd.shape == (240, 240, 3) and (lcd == 9).all()
+    assert camera.lcd_region(240, 320) == (40, 0, 240)
+
+
+def test_to_lcd_rejects_non_integer_scale():
+    with pytest.raises(ValueError):
+        camera.to_lcd(np.zeros((300, 400, 3), dtype=np.uint8))
 
 
 def test_camera_is_opened_once(clock):

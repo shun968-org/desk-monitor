@@ -1,12 +1,10 @@
 # Raspberry Pi 実機専用(コンテナでは入らない)。-r requirements.txt を含む。
 # venv は apt で入る libcamera 等を使うため --system-site-packages で作る(~/desk-monitor/.venv。scripts/deploy.sh が作成・更新する)。
-# 物体検出の onnxruntime は pip で入れる。apt の python3-onnxruntime は Pi 3 (Cortex-A53) で
-# import 時に Illegal instruction で落ちるため使わない。
+# 表示用の Pi(role display)だけが使う。物体検出はハブ(開発 PC)で行うため onnxruntime は入れない
+# (apt の python3-onnxruntime は Pi 3 で import 時に Illegal instruction で落ちる)。
 -r requirements.txt
 gpiozero==2.0.1
 lgpio==0.2.2.0
 rpi-lgpio==0.6
 spidev==3.6
 picamera2==0.3.36
-onnxruntime==1.31.0
-protobuf==7.36.2

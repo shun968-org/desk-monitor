@@ -1,50 +1,51 @@
 """GC9A01 ディスプレイの常駐型表示プロセス(systemd ユーザーサービス desk-monitor-display)。
 
-  face   : 表情アニメーション(face.py)を表示し、trend.py からの吹き出し通知を重ねる
-  camera : Picamera2 のライブ映像を表示する(鏡像を 180° 回転して表示)
-           YOLO で物体を検出し、検出枠とラベル(種類・信頼度)を重ねて描く
-           (detector.py。onnxruntime かモデルが無ければ映像のみ表示)
+  face   : 表情アニメーション(face.py)を表示する
+  camera : カメラの全視野の中央の正方形を表示する(camera.to_lcd)。
+           ハブ(開発 PC)が物体検出の結果を送ってくれば、検出枠とラベルを重ねる。
+           ハブが止まっていれば枠なしの映像だけを出す
 
-プロセスは起動後常駐し、以下のシグナルでモードを即時切替する
-(プロセス再起動・LCD/カメラの再初期化を伴わないため瞬時に切り替わる)。
+カメラは、環境変数 DESK_MONITOR_CAMERA_ADDR があればカメラ配信サーバ(別の Pi の camera_server.py)
+の映像を使い(remote_camera.py)、なければこの Pi に付けたカメラを使う(camera.py)。
+映像が来ないときは camera モードでも face 表示にする。
+
+プロセスは起動後常駐し、以下のシグナル、またはハブからの操作(control.py)でモードを即時切替する。
 
   SIGUSR1 : face モードに切替
   SIGUSR2 : camera モードに切替
 
-カメラは初回 camera モード移行時に起動し、以後プロセス終了まで停止しない
-(次回以降の camera モードへの切替を瞬時にするため、消費電力よりも
-切替速度を優先する)。
+環境変数(~/.config/desk-monitor/desk-monitor.env。scripts/setup-secrets.sh で作る):
+  DESK_MONITOR_TOKEN        機器間の共有トークン。無ければ制御口を開かず、カメラ配信も使わない
+  DESK_MONITOR_CAMERA_ADDR  カメラ配信サーバ(例 192.168.10.111:8082)
 
 使い方(リポジトリ直下で):
     PYTHONPATH=src python3 -m desk_monitor.display
         [--mode camera|face] [--brightness 0.0-1.0] [--fps 30]
-        [--expression auto|smile|neutral] [--no-detect] [--model PATH]
-        [--conf 0.4] [--detect-interval 1.0]
+        [--expression auto|smile|neutral] [--control-port 8083]
 
 依存パッケージ:
     sudo apt install python3-pil python3-numpy python3-spidev python3-gpiozero python3-lgpio
-    # camera モード時のみ:
+    # この Pi のカメラを使うときのみ:
     sudo apt install python3-picamera2
-    # 物体検出を使う場合のみ(apt の python3-onnxruntime は Pi 3 で落ちるため pip で入れる):
-    ~/desk-monitor/.venv/bin/pip install -r requirements-pi.txt  # scripts/deploy.sh が実行する
 """
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import signal
-import subprocess
 import sys
 import time
-from pathlib import Path
 
-from desk_monitor.bubble import BubbleOverlay, start_socket_listener
-from desk_monitor.camera import CameraSource
+from desk_monitor import wire
+from desk_monitor.camera import CameraSource, lcd_region, to_lcd
+from desk_monitor.control import ControlServer, DetectionOverlay, DisplayControl
+from desk_monitor.detector import draw_detections, to_region
 from desk_monitor.face import FaceAnimator
 from desk_monitor.fonts import get_font
-from desk_monitor.lcd import GC9A01
-from desk_monitor.paths import MODELS_DIR
-
-DEFAULT_MODEL = MODELS_DIR / 'yolo11n.onnx'
+from desk_monitor.lcd import WIDTH, GC9A01
+from desk_monitor.notification import start_socket_listener
+from desk_monitor.remote_camera import RemoteCamera
 
 
 class ModeController:
@@ -62,69 +63,80 @@ class ModeController:
         self.mode = 'camera'
 
 
-def _onnxruntime_importable() -> bool:
-    """onnxruntime を別プロセスで import できるか確かめる。
-
-    CPU が対応しない命令でビルドされた onnxruntime（Debian の python3-onnxruntime を
-    Pi 3 で使った場合など）は import 時に SIGILL でプロセスごと落ち、例外では
-    捕捉できないため、表示プロセス本体で import する前に子プロセスで試す。
-    """
-    try:
-        result = subprocess.run([sys.executable, '-c', 'import onnxruntime'],
-                                capture_output=True, timeout=60)
-    except subprocess.TimeoutExpired:
-        return False
-    return result.returncode == 0
+def _create_camera(token: str):
+    """カメラ配信サーバが設定されていればその映像を、なければこの Pi のカメラを使う。"""
+    addr = os.environ.get('DESK_MONITOR_CAMERA_ADDR', '')
+    if addr and token:
+        try:
+            return RemoteCamera(wire.parse_addr(addr), token)
+        except ValueError as exc:
+            print(f'DESK_MONITOR_CAMERA_ADDR が不正です: {exc}', file=sys.stderr, flush=True)
+    return CameraSource()
 
 
-def _create_detection_worker(model_path: Path, conf: float, interval: float):
-    """物体検出ワーカーを作る。使えない環境では None を返し、映像表示だけを続ける。"""
-    if not model_path.is_file():
-        print(f'物体検出モデルが見つからないため検出を無効にします: {model_path}',
-              file=sys.stderr, flush=True)
-        return None
-    if not _onnxruntime_importable():
-        print('onnxruntime を読み込めないため検出を無効にします',
-              file=sys.stderr, flush=True)
-        return None
-    try:
-        from desk_monitor.detector import DetectionWorker, YoloDetector
-        return DetectionWorker(YoloDetector(model_path, conf_threshold=conf),
-                               min_interval=interval)
-    except Exception as exc:
-        print(f'物体検出を初期化できないため無効にします: {exc}',
-              file=sys.stderr, flush=True)
-        return None
+class _Stats:
+    """表示プロセスの状態(制御口からハブに送る)。"""
+
+    def __init__(self) -> None:
+        self.showing = 'face'
+        self.fps = 0.0
+        self.detections = 0
+        self._frames = 0
+        self._since = time.time()
+
+    def tick(self, now: float) -> None:
+        self._frames += 1
+        if now - self._since >= 2.0:
+            self.fps = round(self._frames / (now - self._since), 1)
+            self._frames, self._since = 0, now
 
 
 def run(lcd: GC9A01, fps: float, expression: str, initial_mode: str,
-        socket_path: str, detect: bool, model_path: Path, conf: float,
-        detect_interval: float) -> None:
+        socket_path: str, control_port: int = 0) -> None:
     controller = ModeController(initial_mode)
     animator = FaceAnimator()
-    camera = CameraSource()
-    bubble = BubbleOverlay()
-    start_socket_listener(bubble, socket_path)
-    detector = (_create_detection_worker(model_path, conf, detect_interval)
-                if detect else None)
-    if detector is not None:
-        from desk_monitor.detector import draw_detections
-        label_font = get_font(13)
-    period = 1.0 / fps
+    token = os.environ.get('DESK_MONITOR_TOKEN', '')
+    camera = _create_camera(token)
+    overlay = DetectionOverlay()
+    stats = _Stats()
+    label_font = get_font(13)
 
+    if control_port and token:
+        def status() -> dict:
+            return {'mode': controller.mode, 'showing': stats.showing, 'fps': stats.fps,
+                    'detections': stats.detections,
+                    'camera_connected': getattr(camera, 'connected', None)}
+
+        def set_mode(mode: str) -> None:
+            controller.mode = mode
+
+        control = DisplayControl(status, set_mode, overlay)
+        # トレンド監視の通知は LCD には出さず、ハブに中継してダッシュボードに出す
+        start_socket_listener(control.notify, socket_path)
+        try:
+            ControlServer(('0.0.0.0', control_port), token, control).start()
+        except OSError as exc:
+            print(f'制御口を開けません: {exc}', file=sys.stderr, flush=True)
+
+    period = 1.0 / fps
     try:
         while True:
             t = time.time()
-            # camera モードでもカメラが使えなければ face 表示にする
-            arr = camera.frame() if controller.mode == 'camera' else None
-            if arr is not None:
-                if detector is not None:
-                    detector.submit(arr)
-                    arr = draw_detections(arr, detector.latest(t), label_font)
+            # camera モードでもカメラの映像が来なければ face 表示にする
+            full = camera.frame() if controller.mode == 'camera' else None
+            if full is not None:
+                arr = to_lcd(full)
+                height, width = full.shape[:2]
+                detections = to_region(overlay.latest(width, height, t),
+                                       *lcd_region(height, width), WIDTH)
+                if detections:
+                    arr = draw_detections(arr, detections, label_font)
+                stats.showing, stats.detections = 'camera', len(detections)
             else:
-                # 吹き出しは face 表示のときのみ（camera 表示中は表示時間だけが進む）
-                arr = bubble.apply(animator.frame(t, expression), t)
+                arr = animator.frame(t, expression)
+                stats.showing, stats.detections = 'face', 0
             lcd.push_rgb(arr)
+            stats.tick(t)
             elapsed = time.time() - t
             if elapsed < period:
                 time.sleep(period - elapsed)
@@ -146,16 +158,11 @@ def main() -> None:
                         default='auto',
                         help='face モードの表情 (既定: auto = 瞬き＋アイドル表情サイクル)')
     parser.add_argument('--socket-path', default='/tmp/show_face.sock',
-                        help='吹き出し通知用 Unix ソケットパス (既定: /tmp/show_face.sock)')
-    parser.add_argument('--detect', action=argparse.BooleanOptionalAction, default=True,
-                        help='camera モードで物体検出の枠とラベルを表示する (既定: 有効)')
-    parser.add_argument('--model', type=Path, default=DEFAULT_MODEL,
-                        help=f'物体検出の ONNX モデル (既定: {DEFAULT_MODEL})')
-    parser.add_argument('--conf', type=float, default=0.4,
-                        help='物体検出の信頼度しきい値 0.0-1.0 (既定: 0.4)')
-    parser.add_argument('--detect-interval', type=float, default=1.0,
-                        help='物体検出の実行間隔の下限 秒 (既定: 1.0。発熱を抑えるため)')
+                        help='トレンド監視の通知を受ける Unix ソケットパス (既定: /tmp/show_face.sock)')
+    parser.add_argument('--control-port', type=int, default=8083,
+                        help='ハブからの接続を受けるポート。0 で開かない (既定: 8083)')
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s: %(message)s')
 
     if not 0.0 <= args.brightness <= 1.0:
         print('brightness は 0.0-1.0 の範囲で指定してください', file=sys.stderr)
@@ -165,8 +172,7 @@ def main() -> None:
     try:
         lcd.init()
         lcd.bl.value = args.brightness
-        run(lcd, args.fps, args.expression, args.mode, args.socket_path,
-            args.detect, args.model, args.conf, args.detect_interval)
+        run(lcd, args.fps, args.expression, args.mode, args.socket_path, args.control_port)
     except KeyboardInterrupt:
         pass
     finally:

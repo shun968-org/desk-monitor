@@ -1,0 +1,27 @@
+# カメラ映像を LAN 内に配信する常駐プロセス(desk_monitor.camera_server)。role camera(pi_b)。
+# systemd のユーザーサービスとして動かす。配置は scripts/deploy.sh pi_b で行う。
+# H.264(ハブ向け)と MJPEG(表示用の Pi 向け)をハードウェアエンコーダで作り、ポート 8082 で配る。
+
+[Unit]
+Description=desk-monitor camera server (H.264 / MJPEG over LAN)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/desk-monitor
+Environment=PYTHONPATH=%h/desk-monitor/src
+# 機器間の共有トークン(scripts/setup-secrets.sh で作る)。リポジトリには置かない
+EnvironmentFile=-%h/.config/desk-monitor/desk-monitor.env
+# picamera2 は apt のものを使い、ほかに依存はないので venv は使わない。
+# 向きを変えるときは --no-vflip / --hflip を足す
+ExecStart=/usr/bin/python3 -m desk_monitor.camera_server
+KillSignal=SIGINT
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+# トークンが未設定(終了コード 2)なら再起動しない
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=default.target
