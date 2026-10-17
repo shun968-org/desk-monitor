@@ -1,7 +1,6 @@
-#!/usr/bin/env python3
 """YOLO (ONNX) による物体検出と、検出枠・ラベルの描画。
 
-show_face.py の camera モードから使う。推論は別スレッド (DetectionWorker) で
+display.py の camera モードから使う。推論は別スレッド (DetectionWorker) で
 最新フレームに対して繰り返し実行し、表示ループは直近の検出結果を重ねて描くだけ
 にすることで、推論が遅い Raspberry Pi 3 でも表示のフレームレートを落とさない。
 

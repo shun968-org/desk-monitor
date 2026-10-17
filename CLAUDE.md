@@ -8,12 +8,20 @@ rsync で `~/desk-monitor/` に配置し、`~/desk-monitor/.venv` を更新し�
 Pi 上のファイルを直接編集・`scp` しない(次の deploy で上書き・削除される)。
 ログは `journalctl _SYSTEMD_USER_UNIT=desk-monitor-display.service`(Pi では `journalctl --user` が使えない)。
 
-- `show_face.py`: GC9A01 ディスプレイ(240x240)に表情アニメーション(`faces/`)またはカメラ映像を表示する常駐スクリプト。
+ソースは `src/desk_monitor/` パッケージ。systemd からは `PYTHONPATH=src` で `python -m desk_monitor.<module>` として起動する。
+
+- `display.py`: 表示プロセスのエントリポイント。GC9A01 ディスプレイ(240x240)に表情アニメーションまたはカメラ映像を表示する。
   systemd ユーザーサービス `desk-monitor-display`(`deploy/systemd/`)として動く。モード切替は SIGUSR1(face)/ SIGUSR2(camera)
-- `object_detector.py`: camera モードの物体検出(YOLO11n / ONNX Runtime)。モデル(`models/yolo11n.onnx`、git 管理外)は `scripts/export_yolo.sh` で生成し、`scripts/deploy.sh` が Pi に配置する
-- `trend_monitor.py` / `trend_config.json`: Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセスに吹き出し通知を送る。
-  systemd ユーザーサービス `desk-monitor-trend` として動く
-- `show_camera.py` / `show_image.py`: カメラ・画像表示のユーティリティ
+  - `lcd.py`(GC9A01 ドライバ。全ツールで共用)、`face.py`(表情アニメーション)、`bubble.py`(吹き出しと通知用 Unix ソケット)、
+    `camera.py`(Picamera2)、`fonts.py`、`paths.py`(素材・設定・モデルの場所)
+  - `detector.py`: camera モードの物体検出(YOLO11n / ONNX Runtime)。モデル(`models/yolo11n.onnx`、git 管理外)は
+    `scripts/export_yolo.sh` で生成し、`scripts/deploy.sh` が Pi に配置する
+- `trend.py`: Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセスに吹き出し通知を送る。
+  設定は `config/trend_config.json`。systemd ユーザーサービス `desk-monitor-trend` として動く
+- `tools/show_camera.py` / `tools/show_image.py`: カメラ・画像表示の単発ユーティリティ(表示サービスを止めてから使う)
+- 素材は `assets/`(`faces/` の表情画像、`fonts/` の IPAex ゴシックとライセンス)
+- ハードウェア依存(spidev / gpiozero / picamera2 / onnxruntime)の import は使う箇所まで遅延させ、
+  それ以外のモジュールは開発機・CI で import できるようにしておく
 
 ## 依存関係
 

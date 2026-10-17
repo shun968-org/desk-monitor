@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# show_face.py の物体検出で使う YOLO11n を ONNX に書き出し、models/yolo11n.onnx に置く。
+# 表示プロセス(desk_monitor.display)の物体検出で使う YOLO11n を ONNX に書き出し、models/yolo11n.onnx に置く。
 # 開発機の Python 環境を汚さないよう Docker コンテナ内で ultralytics を使う。
 # Pi 3 で推論できる速さにするため、入力サイズは 256x256 にしている。
 #

@@ -25,4 +25,4 @@ jobs:
             -Dsonar.organization=shun968-org
             -Dsonar.projectKey=shun968-org_desk-monitor
             -Dsonar.sources=.
-            -Dsonar.exclusions=node_modules/**,show_face_fonts/**,faces/**,**/*.png
+            -Dsonar.exclusions=node_modules/**,assets/**,**/*.png
