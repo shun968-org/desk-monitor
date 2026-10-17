@@ -25,17 +25,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-# COCO 80 クラスの日本語名（モデルのクラス ID 順）
-COCO_LABELS_JA = [
-    '人', '自転車', '車', 'バイク', '飛行機', 'バス', '電車', 'トラック', 'ボート', '信号機',
-    '消火栓', '一時停止標識', 'パーキングメーター', 'ベンチ', '鳥', '猫', '犬', '馬', '羊', '牛',
-    '象', '熊', 'シマウマ', 'キリン', 'リュック', '傘', 'ハンドバッグ', 'ネクタイ', 'スーツケース', 'フリスビー',
-    'スキー板', 'スノーボード', 'ボール', '凧', '野球バット', '野球グローブ', 'スケートボード', 'サーフボード', 'テニスラケット', 'ボトル',
-    'ワイングラス', 'カップ', 'フォーク', 'ナイフ', 'スプーン', 'ボウル', 'バナナ', 'りんご', 'サンドイッチ', 'オレンジ',
-    'ブロッコリー', 'にんじん', 'ホットドッグ', 'ピザ', 'ドーナツ', 'ケーキ', '椅子', 'ソファ', '鉢植え', 'ベッド',
-    'テーブル', 'トイレ', 'テレビ', 'ノートPC', 'マウス', 'リモコン', 'キーボード', 'スマホ', '電子レンジ', 'オーブン',
-    'トースター', 'シンク', '冷蔵庫', '本', '時計', '花瓶', 'はさみ', 'ぬいぐるみ', 'ドライヤー', '歯ブラシ',
-]
+from desk_monitor.labels import COCO_LABELS_JA, OBJ365_LABELS_JA
+
 
 # 枠の色（クラス ID で巡回させる。暗い映像上でも見える彩度の高い色）
 _PALETTE = [
@@ -56,9 +47,13 @@ class Detection:
     y2: float
     score: float
     class_id: int
+    # 種類名。COCO 以外のモデル(Objects365 など)や、ハブから届いた結果で使う。None なら COCO の名前
+    name: str | None = None
 
     @property
     def label(self) -> str:
+        if self.name is not None:
+            return self.name
         if 0 <= self.class_id < len(COCO_LABELS_JA):
             return COCO_LABELS_JA[self.class_id]
         return f'#{self.class_id}'
@@ -77,10 +72,17 @@ def _create_session(model_path: Path, num_threads: int):
 
 
 def load_detector(model_path: Path, conf_threshold: float = 0.4, num_threads: int = 4):
-    """ONNX モデルの入力から種類を判別して、YOLO か D-FINE の検出器を作る。"""
+    """ONNX モデルの入力から種類を判別して、YOLO か D-FINE の検出器を作る。
+
+    D-FINE はファイル名に obj365 を含めば Objects365(365 種類)、それ以外は COCO(80 種類)のモデルとみなす
+    (scripts/export_dfine.sh が付ける名前)。
+    """
     session = _create_session(model_path, num_threads)
     names = {i.name for i in session.get_inputs()}
     if 'orig_target_sizes' in names:
+        if 'obj365' in Path(model_path).name:
+            return DFineDetector(session, conf_threshold=conf_threshold, labels=OBJ365_LABELS_JA,
+                                 first_label=1)
         return DFineDetector(session, conf_threshold=conf_threshold)
     return YoloDetector(model_path, conf_threshold=conf_threshold, session=session)
 
@@ -102,11 +104,16 @@ def _letterbox(rgb: np.ndarray, width: int, height: int, pad_value: int
 class DFineDetector:
     """D-FINE(DETR 系)の ONNX モデルで 1 フレームを推論する。
 
-    出力は信頼度の高い順に 300 件(labels: 0〜79、boxes: 入力画素の xyxy、scores)で、NMS は要らない。
+    出力は信頼度の高い順に 300 件(labels、boxes: 元の画像の画素の xyxy、scores)で、NMS は要らない。
+    labels を渡すと種類名をそこから引く。Objects365 版はクラス番号が 1 から始まる(0 は使われない)ので
+    first_label=1 とし、class_id は 0 始まりに直す。
     """
 
-    def __init__(self, session, conf_threshold: float = 0.4, max_detections: int = 20) -> None:
+    def __init__(self, session, conf_threshold: float = 0.4, max_detections: int = 20,
+                 labels: list[str] | None = None, first_label: int = 0) -> None:
         self._session = session
+        self._labels = labels
+        self._first_label = first_label
         inp = next(i for i in session.get_inputs() if i.name == 'images')
         self._input_h, self._input_w = int(inp.shape[2]), int(inp.shape[3])
         self.conf_threshold = conf_threshold
@@ -125,11 +132,15 @@ class DFineDetector:
         for label, box, score in zip(labels[0], boxes[0], scores[0]):
             if score < self.conf_threshold:
                 continue
+            class_id = int(label) - self._first_label
+            if class_id < 0 or (self._labels is not None and class_id >= len(self._labels)):
+                continue
+            name = self._labels[class_id] if self._labels is not None else None
             x1, y1, x2, y2 = box.tolist()
             x1, x2 = max(0.0, x1), min(img_w - 1.0, x2)
             y1, y2 = max(0.0, y1), min(img_h - 1.0, y2)
             if x2 > x1 and y2 > y1:
-                detections.append(Detection(x1, y1, x2, y2, float(score), int(label)))
+                detections.append(Detection(x1, y1, x2, y2, float(score), class_id, name))
         detections.sort(key=lambda d: d.score, reverse=True)
         return detections[:self.max_detections]
 

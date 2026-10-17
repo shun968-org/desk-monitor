@@ -1,31 +1,35 @@
 #!/usr/bin/env bash
 #
-# ハブ(desk_monitor.hub)の物体検出で使う D-FINE(Objects365 で事前学習し COCO で仕上げたもの)を
-# ONNX に書き出し、models/dfine_<size>_obj2coco.onnx に置く。Docker コンテナ内で書き出す。
+# ハブ(desk_monitor.hub)の物体検出で使う D-FINE を ONNX に書き出し、models/dfine_<種類>.onnx に置く。
+# Docker コンテナ内で書き出す。
 #
-#   l: COCO AP 57.3(開発 PC の CPU で 1 回 約 0.3〜0.4 秒)
-#   x: COCO AP 59.3(同 約 0.7〜0.9 秒)
+#   l365: Objects365 の 365 種類(AP 44.7)。models/dfine_l_obj365.onnx
+#   x365: Objects365 の 365 種類(AP 49.5)。models/dfine_x_obj365.onnx
+#   l:    COCO の 80 種類(Objects365 で事前学習し COCO で仕上げたもの、AP 57.3)。models/dfine_l_obj2coco.onnx
+#   x:    同(AP 59.3)。models/dfine_x_obj2coco.onnx
 #
 # 重みは Objects365 データセットの利用条件を受ける可能性があり、商用利用できるとは限らない(D-FINE の README)。
 #
-# 使い方: scripts/export_dfine.sh [l|x ...]   (既定: l)
+# 使い方: scripts/export_dfine.sh [l365|x365|l|x ...]   (既定: l365)
 # 反映: ~/.config/desk-monitor/desk-monitor.env の DESK_MONITOR_MODEL で指定し、scripts/deploy-hub.sh
 
 set -euo pipefail
 
-if [[ $# -gt 0 ]]; then sizes=("$@"); else sizes=(l); fi
+if [[ $# -gt 0 ]]; then sizes=("$@"); else sizes=(l365); fi
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-declare -A weights=([l]=dfine_l_obj2coco_e25 [x]=dfine_x_obj2coco)
+# 種類 → 重みのファイル名 / 設定ファイル / 出力名
+declare -A weights=([l365]=dfine_l_obj365_e25 [x365]=dfine_x_obj365 [l]=dfine_l_obj2coco_e25 [x]=dfine_x_obj2coco)
+declare -A configs=([l365]=l_obj365 [x365]=x_obj365 [l]=l_obj2coco [x]=x_obj2coco)
 exports=""
 for size in "${sizes[@]}"; do
-  [[ -n "${weights[$size]:-}" ]] || { echo "l か x を指定してください: $size" >&2; exit 1; }
+  [[ -n "${weights[$size]:-}" ]] || { echo "l365 / x365 / l / x のいずれかを指定してください: $size" >&2; exit 1; }
   w="${weights[$size]}"
   exports+="wget -q https://github.com/Peterande/storage/releases/download/dfinev1.0/$w.pth && "
-  exports+="python tools/deployment/export_onnx.py -c configs/dfine/objects365/dfine_hgnetv2_${size}_obj2coco.yml -r $w.pth && "
-  exports+="cp $w.onnx /out/dfine_${size}_obj2coco.onnx && "
+  exports+="python tools/deployment/export_onnx.py -c configs/dfine/objects365/dfine_hgnetv2_${configs[$size]}.yml -r $w.pth && "
+  exports+="cp $w.onnx /out/dfine_${configs[$size]}.onnx && "
 done
 
 # torch 2.6 以降は ONNX の書き出し方式が変わり、D-FINE の書き出しスクリプトが動かないため版を固定する
@@ -42,6 +46,6 @@ docker run --rm -v "$work:/out" python:3.11-slim bash -c "
 
 mkdir -p "$repo_root/models"
 for size in "${sizes[@]}"; do
-  mv "$work/dfine_${size}_obj2coco.onnx" "$repo_root/models/"
-  echo "書き出し完了: $repo_root/models/dfine_${size}_obj2coco.onnx"
+  mv "$work/dfine_${configs[$size]}.onnx" "$repo_root/models/"
+  echo "書き出し完了: $repo_root/models/dfine_${configs[$size]}.onnx"
 done

@@ -15,9 +15,9 @@ from desk_monitor.detector import Detection
 def test_history_records_and_summarizes():
     h = hub.History(':memory:')
     now = time.time()
-    h.add_detection(0, now - 10, now - 5, 2, 0.91)
-    h.add_detection(15, now - 3, now - 1, 1, 0.6)
-    h.add_detection(0, now - 1, now, 1, 0.7)
+    h.add_detection(0, '人', now - 10, now - 5, 2, 0.91)
+    h.add_detection(15, '猫', now - 3, now - 1, 1, 0.6)
+    h.add_detection(0, '人', now - 1, now, 1, 0.7)
     h.add_notification(now, 'bluesky', '「地震」が多数投稿されています')
     recent = h.recent()
     assert [d['label'] for d in recent['detections']] == ['人', '猫', '人']
@@ -41,10 +41,10 @@ def test_presence_tracker_merges_short_gaps():
     tracker.update([person], 102.0)  # 3 秒以内に再び見えたら同じ記録
     assert tracker.active() == [{'label': '人', 'since': 100.0, 'count': 2}]
     tracker.update([], 105.5)
-    assert ended == [(0, 100.0, 102.0, 2, 0.9)]
-    tracker.update([Detection(0, 0, 1, 1, 0.5, 16)], 106.0)
+    assert ended == [(0, '人', 100.0, 102.0, 2, 0.9)]
+    tracker.update([Detection(0, 0, 1, 1, 0.5, 54, 'ペン')], 106.0)
     tracker.flush()
-    assert ended[-1][0] == 16 and not tracker.active()
+    assert ended[-1][:2] == (54, 'ペン') and not tracker.active()
 
 
 def test_state_snapshot_and_jpeg():
@@ -76,7 +76,7 @@ def test_display_link_sends_normalized_detections():
     link.send_detections([Detection(64, 48, 320, 240, 0.87654, 3)], 640, 480)
     msg = link._outbox.get_nowait()
     assert msg == {'type': 'detections', 'items': [
-        {'x1': 0.1, 'y1': 0.1, 'x2': 0.5, 'y2': 0.5, 'score': 0.877, 'cls': 3}]}
+        {'x1': 0.1, 'y1': 0.1, 'x2': 0.5, 'y2': 0.5, 'score': 0.877, 'cls': 3, 'label': 'バイク'}]}
 
     link._handle({'type': 'status', 'display': {'mode': 'face'}, 'system': {'temp': 50}})
     assert state.display['display'] == {'mode': 'face'}

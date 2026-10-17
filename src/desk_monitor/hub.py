@@ -4,7 +4,7 @@
                                                           │
                                                           └──▶ ダッシュボード(http://127.0.0.1:8090/)
 
-- カメラ配信サーバから全視野の H.264 を受けて復号し(PyAV)、物体検出(既定 D-FINE-L)を繰り返す。
+- カメラ配信サーバから全視野の H.264 を受けて復号し(PyAV)、物体検出(既定 D-FINE-L の Objects365 版、365 種類)を繰り返す。
   一瞬だけ出る誤検出は DetectionStabilizer で抑える
 - 検出結果(全視野に対する 0〜1 の座標)を表示プロセスに送り、円形 LCD に枠を重ねさせる
 - 表示プロセスに操作(モード切替)を送り、状態とトレンド監視の通知を受け取る
@@ -19,7 +19,7 @@
   DESK_MONITOR_DISPLAY_ADDR(例 192.168.10.113:8083)
 
 使い方(リポジトリ直下で。通常は deploy/hub の Docker で動かす):
-    PYTHONPATH=src python3 -m desk_monitor.hub [--port 8090] [--model models/dfine_l_obj2coco.onnx]
+    PYTHONPATH=src python3 -m desk_monitor.hub [--port 8090] [--model models/dfine_l_obj365.onnx]
 """
 from __future__ import annotations
 
@@ -42,15 +42,15 @@ import numpy as np
 from PIL import Image
 
 from desk_monitor import sysstat, wire
-from desk_monitor.detector import (COCO_LABELS_JA, Detection, DetectionWorker, draw_detections,
-                                   load_detector)
+from desk_monitor.detector import Detection, DetectionWorker, draw_detections, load_detector
 from desk_monitor.fonts import get_font
 from desk_monitor.paths import MODELS_DIR
 
 log = logging.getLogger(__name__)
 
-# D-FINE-L(Objects365 で事前学習、COCO AP 57.3)。実際の映像で YOLO11m より誤検出が少なかった
-DEFAULT_MODEL = MODELS_DIR / 'dfine_l_obj2coco.onnx'
+# D-FINE-L の Objects365 版(365 種類)。COCO 版(80 種類)では眼鏡やイヤホンが「ネクタイ」「花瓶」に
+# 誤分類されていたが、Objects365 版は正しい種類名で出た(速さはほぼ同じ)
+DEFAULT_MODEL = MODELS_DIR / 'dfine_l_obj365.onnx'
 # 機器の状態の推移を残す長さ(状態は約 2 秒ごとに届く)
 METRICS_SEC = 600
 DEFAULT_DB = Path.home() / '.local' / 'share' / 'desk-monitor' / 'hub.sqlite3'
@@ -59,10 +59,6 @@ PING_SEC = 2.0
 # この秒数見えなくなったら、その種類の検出を「終わった」とみなす(一瞬の見落としで記録を分けない)
 PRESENCE_GAP_SEC = 3.0
 STREAM_FPS = 10.0
-
-
-def _label(class_id: int) -> str:
-    return COCO_LABELS_JA[class_id] if 0 <= class_id < len(COCO_LABELS_JA) else f'#{class_id}'
 
 
 # ─── 履歴 ────────────────────────────────────────────────────────────────
@@ -87,13 +83,13 @@ class History:
                 CREATE INDEX IF NOT EXISTS notifications_at ON notifications(at);
             ''')
 
-    def add_detection(self, class_id: int, started_at: float, ended_at: float,
+    def add_detection(self, class_id: int, label: str, started_at: float, ended_at: float,
                       max_count: int, max_score: float) -> None:
         with self._lock, self._db:
             self._db.execute(
                 'INSERT INTO detections (class_id, label, started_at, ended_at, max_count, max_score)'
                 ' VALUES (?, ?, ?, ?, ?, ?)',
-                (class_id, _label(class_id), started_at, ended_at, max_count, max_score))
+                (class_id, label, started_at, ended_at, max_count, max_score))
 
     def add_notification(self, at: float, source: str, text: str) -> None:
         with self._lock, self._db:
@@ -153,38 +149,38 @@ class DetectionStabilizer:
 
 
 class PresenceTracker:
-    """フレームごとの検出結果から「何がいつからいつまで映っていたか」をまとめる。"""
+    """フレームごとの検出結果から「何がいつからいつまで映っていたか」を種類名ごとにまとめる。"""
 
     def __init__(self, on_end, gap: float = PRESENCE_GAP_SEC) -> None:
-        self._on_end = on_end
+        self._on_end = on_end  # on_end(class_id, label, 開始, 終了, 最大数, 最大信頼度)
         self._gap = gap
-        self._active: dict[int, dict] = {}
+        self._active: dict[str, dict] = {}
 
     def update(self, detections: list[Detection], now: float) -> None:
-        counts: dict[int, tuple[int, float]] = {}
+        counts: dict[str, tuple[int, int, float]] = {}
         for d in detections:
-            n, best = counts.get(d.class_id, (0, 0.0))
-            counts[d.class_id] = (n + 1, max(best, d.score))
-        for class_id, (n, best) in counts.items():
+            _, n, best = counts.get(d.label, (d.class_id, 0, 0.0))
+            counts[d.label] = (d.class_id, n + 1, max(best, d.score))
+        for label, (class_id, n, best) in counts.items():
             item = self._active.setdefault(
-                class_id, {'start': now, 'last': now, 'count': 0, 'score': 0.0})
+                label, {'class_id': class_id, 'start': now, 'last': now, 'count': 0, 'score': 0.0})
             item['last'] = now
             item['count'] = max(item['count'], n)
             item['score'] = max(item['score'], best)
-        for class_id in [c for c, item in self._active.items() if now - item['last'] > self._gap]:
-            self._finish(class_id)
+        for label in [k for k, item in self._active.items() if now - item['last'] > self._gap]:
+            self._finish(label)
 
     def flush(self) -> None:
-        for class_id in list(self._active):
-            self._finish(class_id)
+        for label in list(self._active):
+            self._finish(label)
 
     def active(self) -> list[dict]:
-        return [{'label': _label(c), 'since': item['start'], 'count': item['count']}
-                for c, item in sorted(self._active.items(), key=lambda kv: kv[1]['start'])]
+        return [{'label': label, 'since': item['start'], 'count': item['count']}
+                for label, item in sorted(self._active.items(), key=lambda kv: kv[1]['start'])]
 
-    def _finish(self, class_id: int) -> None:
-        item = self._active.pop(class_id)
-        self._on_end(class_id, item['start'], item['last'], item['count'], item['score'])
+    def _finish(self, label: str) -> None:
+        item = self._active.pop(label)
+        self._on_end(item['class_id'], label, item['start'], item['last'], item['count'], item['score'])
 
 
 # ─── 状態 ────────────────────────────────────────────────────────────────
@@ -371,7 +367,8 @@ class DisplayLink:
 
     def send_detections(self, detections: list[Detection], width: int, height: int) -> None:
         items = [{'x1': d.x1 / width, 'y1': d.y1 / height, 'x2': d.x2 / width,
-                  'y2': d.y2 / height, 'score': round(d.score, 3), 'cls': d.class_id}
+                  'y2': d.y2 / height, 'score': round(d.score, 3), 'cls': d.class_id,
+                  'label': d.label}
                  for d in detections]
         self.send({'type': 'detections', 'items': items})
 
