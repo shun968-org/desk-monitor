@@ -162,13 +162,15 @@ class DetectionWorker:
     推論は ONNX Runtime 内で GIL を解放するため、表示ループは止まらない。
     """
 
-    # これより古い検出結果は表示しない（camera モードから戻った直後などの残像防止）
+    # これより古い検出結果は表示しない（camera モードから戻った直後などの残像防止）。
+    # 推論間隔が長いと次の結果が届く前に消えて点滅するため、間隔の 2 倍は保持する
     STALE_SEC = 1.5
 
     def __init__(self, detector: YoloDetector, min_interval: float = 0.0) -> None:
         self._detector = detector
         # 推論の開始間隔の下限（秒）。連続推論による発熱で Pi がスロットリングしないよう間引く
         self._min_interval = min_interval
+        self._stale_sec = max(self.STALE_SEC, 2 * min_interval)
         self._cond = threading.Condition()
         self._frame: np.ndarray | None = None
         self._detections: list[Detection] = []
@@ -183,7 +185,7 @@ class DetectionWorker:
 
     def latest(self, t: float) -> list[Detection]:
         with self._cond:
-            if t - self._detected_at > self.STALE_SEC:
+            if t - self._detected_at > self._stale_sec:
                 return []
             return self._detections
 
