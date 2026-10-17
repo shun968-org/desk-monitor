@@ -597,14 +597,18 @@ DASHBOARD_HTML = r"""<!doctype html>
            gap: 2px; z-index: 2; }
   .gizmo[hidden] { display: none; }
   /* 3D ツールの視点ギズモ風: すりガラスの円に、方位の目盛りリングと 3 軸 */
-  #gizmo { width: 112px; height: 112px; border-radius: 50%; cursor: grab; touch-action: none;
+  .gizmo-orb { position: relative; width: 112px; height: 112px; border-radius: 50%;
            background: radial-gradient(circle at 35% 30%, #ffffff1f, #ffffff08 60%, #00000033);
            backdrop-filter: blur(8px) saturate(140%); -webkit-backdrop-filter: blur(8px) saturate(140%);
            border: 1px solid #ffffff26; box-shadow: 0 6px 20px #00000080, inset 0 1px 0 #ffffff1f;
            transition: box-shadow .15s ease, border-color .15s ease; }
-  #gizmo:hover, #gizmo.dragging { border-color: #64b5f6aa;
+  .gizmo-orb:hover, .gizmo-orb.dragging { border-color: #64b5f6aa;
            box-shadow: 0 6px 24px #00000090, 0 0 0 3px #42a5f533, inset 0 1px 0 #ffffff26; }
-  #gizmo.dragging { cursor: grabbing; }
+  /* 3D の軸(three.js)を下に、方位の目盛りと操作を受ける 2D のキャンバスを上に重ねる */
+  .gizmo-orb canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%; }
+  #gizmo3d { pointer-events: none; }
+  #gizmo { cursor: grab; touch-action: none; }
+  .gizmo-orb.dragging #gizmo { cursor: grabbing; }
   #gizmo:focus-visible { outline: 2px solid #42a5f5; outline-offset: 3px; }
   .gizmo-text { font: 500 11px/1.6 system-ui, sans-serif; color: #e0e0e0; padding: 0 10px; border-radius: 999px;
                 background: #14161ab3; border: 1px solid #ffffff1a; backdrop-filter: blur(8px);
@@ -690,9 +694,12 @@ DASHBOARD_HTML = r"""<!doctype html>
       <canvas id="arOverlay" aria-hidden="true"></canvas>
       <!-- カメラの向きを変える 3 軸のアイコン(ドラッグ: 方位と傾き、Shift+ドラッグかホイール: 回転、矢印キーでも可) -->
       <div class="gizmo" id="gizmoBox">
+        <div class="gizmo-orb" id="gizmoOrb">
+        <canvas id="gizmo3d" aria-hidden="true"></canvas>
         <canvas id="gizmo" tabindex="0" role="slider" title="ドラッグ: 方位と傾き / Shift+ドラッグ・ホイール: 回転 / ダブルクリック: 傾きと回転を 0 に"
                 aria-label="カメラの向き(左右の矢印で方位、上下で傾き、Shift+左右で回転)"
                 aria-valuemin="0" aria-valuemax="359" aria-valuenow="0"></canvas>
+        </div>
         <div class="gizmo-text" id="gizmoText"></div>
       </div>
       <div class="msg" id="videoMsg">接続中…</div>
@@ -949,6 +956,10 @@ for (const tab of drawerTabs) tab.addEventListener('click', () => {
 });
 $('drawerClose').addEventListener('click', closeDrawer);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawerPanel) closeDrawer(); });
+// サイドパネル(タブを含む)の外を押したら閉じる。押した先の操作はそのまま行う
+document.addEventListener('pointerdown', (e) => {
+  if (drawerPanel && !$('drawer').contains(e.target)) setDrawer(null);
+});
 
 // 機器のタブ(左右の矢印キーでも切り替える)
 const deviceTabs = [...document.querySelectorAll('[role="tab"][data-device]')];
@@ -1115,8 +1126,25 @@ function drawGizmo() {
   ctx.fillStyle = '#64b5f6';
   ctx.beginPath(); ctx.moveTo(c - 4, 1); ctx.lineTo(c + 4, 1); ctx.lineTo(c, 6); ctx.closePath(); ctx.fill();
 
-  // 3 軸(正の向きは文字入りの丸、負の向きは白抜きの小さな丸)。奥にある軸から描く
-  const basis = cameraBasis(view), len = 30;
+  // 3 軸。three.js が読み込めていれば立体で描き、だめなら 2D で描く
+  const basis = cameraBasis(view);
+  if (window.gizmo3d) {
+    window.gizmo3d.render(basis);
+  } else {
+    drawGizmoAxes2d(ctx, basis, c);
+  }
+  // 中心
+  ctx.fillStyle = '#ffffffcc'; ctx.beginPath(); ctx.arc(c, c, 2, 0, Math.PI * 2); ctx.fill();
+
+  const text = `方位 ${Math.round(view.heading)}° ・ 傾き ${Math.round(view.pitch)}° ・ 回転 ${Math.round(view.roll)}°`;
+  $('gizmoText').innerHTML = `方位 <b>${Math.round(view.heading)}°</b> ・ 傾き <b>${Math.round(view.pitch)}°</b> ・ 回転 <b>${Math.round(view.roll)}°</b>`;
+  canvas.setAttribute('aria-valuenow', String(Math.round(view.heading)));
+  canvas.setAttribute('aria-valuetext', text);
+}
+
+// 2D の軸(three.js を読み込めないとき): 正の向きは文字入りの丸、負の向きは白抜きの小さな丸。奥から描く
+function drawGizmoAxes2d(ctx, basis, c) {
+  const len = 30;
   const axes = [
     { v: [0, 1, 0], color: '#ff5f5f', label: 'N' }, { v: [1, 0, 0], color: '#5fd38d', label: 'E' },
     { v: [0, 0, 1], color: '#5fa8ff', label: 'U' },
@@ -1145,14 +1173,75 @@ function drawGizmo() {
     }
   }
   ctx.globalAlpha = 1;
-  // 中心
-  ctx.fillStyle = '#ffffffcc'; ctx.beginPath(); ctx.arc(c, c, 2, 0, Math.PI * 2); ctx.fill();
-
-  const text = `方位 ${Math.round(view.heading)}° ・ 傾き ${Math.round(view.pitch)}° ・ 回転 ${Math.round(view.roll)}°`;
-  $('gizmoText').innerHTML = `方位 <b>${Math.round(view.heading)}°</b> ・ 傾き <b>${Math.round(view.pitch)}°</b> ・ 回転 <b>${Math.round(view.roll)}°</b>`;
-  canvas.setAttribute('aria-valuenow', String(Math.round(view.heading)));
-  canvas.setAttribute('aria-valuetext', text);
 }
+
+// three.js による立体の軸。module のスクリプトから THREE を渡されて呼ばれる
+window.initGizmo3d = (THREE) => {
+  const canvas = $('gizmo3d'), size = 112;
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  } catch (e) {
+    return;  // WebGL が使えなければ 2D のまま
+  }
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(size, size, false);
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1.3, 1.3, 1.3, -1.3, 0.1, 10);
+  camera.position.set(0, 0, 5);
+  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+  const light = new THREE.DirectionalLight(0xffffff, 2.2);
+  light.position.set(-1.5, 2, 4);
+  scene.add(light);
+
+  // 軸の組(東・北・上の座標で作り、カメラの向きに合わせて回す)
+  const gizmo = new THREE.Group();
+  gizmo.matrixAutoUpdate = false;
+  scene.add(gizmo);
+  const label = (text) => {
+    const c2 = document.createElement('canvas');
+    c2.width = c2.height = 64;
+    const g = c2.getContext('2d');
+    g.font = '700 38px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillStyle = '#0d0f12'; g.fillText(text, 32, 34);
+    const tex = new THREE.CanvasTexture(c2);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+    sprite.scale.set(0.3, 0.3, 1);
+    sprite.renderOrder = 10;
+    return sprite;
+  };
+  const up = new THREE.Vector3(0, 1, 0);
+  for (const [dir, color, text] of [[[0, 1, 0], 0xff5f5f, 'N'], [[1, 0, 0], 0x5fd38d, 'E'], [[0, 0, 1], 0x5fa8ff, 'U']]) {
+    const v = new THREE.Vector3(...dir);
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.1 });
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.72, 20), mat);
+    shaft.quaternion.setFromUnitVectors(up, v);
+    shaft.position.copy(v.clone().multiplyScalar(0.36));
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 32, 24), mat);
+    head.position.copy(v.clone().multiplyScalar(0.9));
+    const tag = label(text);
+    tag.position.copy(head.position);
+    // 逆向き(S・W・下)は半透明の小さな球
+    const back = new THREE.Mesh(new THREE.SphereGeometry(0.11, 24, 16),
+      new THREE.MeshStandardMaterial({ color, roughness: 0.5, transparent: true, opacity: 0.45 }));
+    back.position.copy(v.clone().multiplyScalar(-0.9));
+    gizmo.add(shaft, head, tag, back);
+  }
+  gizmo.add(new THREE.Mesh(new THREE.SphereGeometry(0.07, 20, 16),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 })));
+
+  window.gizmo3d = {
+    render(basis) {
+      // 東・北・上の座標 → 画面(右・上・手前)。カメラの前方は画面の奥(-Z)
+      const { right: r, up: u, f } = basis;
+      gizmo.matrix.set(r[0], r[1], r[2], 0, u[0], u[1], u[2], 0, -f[0], -f[1], -f[2], 0, 0, 0, 0, 1);
+      gizmo.matrixWorldNeedsUpdate = true;
+      renderer.render(scene, camera);
+    },
+  };
+  drawGizmo();
+};
 
 // 地点から方位・距離だけ進んだ地点(扇形の弧を描くため)
 function destination(lat, lon, bearingDeg, distM) {
@@ -1250,7 +1339,7 @@ let drag = null;
 $('gizmo').addEventListener('pointerdown', (e) => {
   drag = { x: e.clientX, y: e.clientY, roll: e.shiftKey };
   $('gizmo').setPointerCapture(e.pointerId);
-  $('gizmo').classList.add('dragging');
+  $('gizmoOrb').classList.add('dragging');
 });
 $('gizmo').addEventListener('pointermove', (e) => {
   if (!drag) return;
@@ -1258,7 +1347,7 @@ $('gizmo').addEventListener('pointermove', (e) => {
   drag.x = e.clientX; drag.y = e.clientY;
   if (drag.roll) rotate(0, 0, dx * 0.3); else rotate(-dx * 0.5, dy * 0.3, 0);
 });
-$('gizmo').addEventListener('pointerup', () => { drag = null; $('gizmo').classList.remove('dragging'); });
+$('gizmo').addEventListener('pointerup', () => { drag = null; $('gizmoOrb').classList.remove('dragging'); });
 // ダブルクリックで傾きと回転を 0 に戻す(方位はそのまま)
 $('gizmo').addEventListener('dblclick', () => { if (view) { view.pitch = 0; view.roll = 0; changed(); } });
 $('gizmo').addEventListener('wheel', (e) => { e.preventDefault(); rotate(0, 0, Math.sign(e.deltaY)); }, { passive: false });
@@ -1298,6 +1387,11 @@ setInterval(drawCharts, 1000);
 window.addEventListener('resize', drawCharts);
 setInterval(refreshState, 1000);
 setInterval(refreshHistory, 5000);
+</script>
+<script type="module">
+  // ギズモの立体表示に three.js を使う(読み込めなければ 2D の描画のまま)
+  import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.min.js';
+  window.initGizmo3d?.(THREE);
 </script>
 </body>
 </html>
