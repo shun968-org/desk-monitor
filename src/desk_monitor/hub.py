@@ -529,22 +529,12 @@ DASHBOARD_HTML = r"""<!doctype html>
   .video .msg { position: absolute; inset: 0; display: grid; place-items: center; background: #000c; }
   .video .msg[hidden] { display: none; }
   .side { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-  .side .history { flex: 1; display: flex; flex-direction: column; }
-  .devices { display: grid; gap: 6px; }
-  .device { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
-  .device b { display: inline-flex; align-items: center; gap: 6px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ng); display: inline-block; }
-  .dot.ok { background: var(--ok); }
   .kv { color: var(--muted); font-size: 12px; }
   .warn { color: var(--warn); }
-  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 4px 0; }
-  .tile { background: #222; border-radius: 6px; padding: 2px 8px; display: flex; flex-direction: column; }
-  .tile .value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .tile.warnv .value, .kv.warnv { color: var(--warn); }
-  .tile.alert .value, .kv.alert { color: var(--ng); }
-  .charts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
-  .charts canvas { width: 100%; height: 120px; background: #161616; border: 1px solid var(--line);
-                   border-radius: 6px; display: block; }
+  /* 右の列の残りの高さを 4 つのグラフで分ける */
+  .charts { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+  .charts canvas { flex: 1; min-height: 80px; width: 100%; background: #161616;
+                   border: 1px solid var(--line); border-radius: 6px; display: block; }
   button { background: #333; color: var(--text); border: 1px solid #444; border-radius: 6px;
            padding: 4px 12px; cursor: pointer; }
   button[aria-pressed="true"] { background: #1565c0; border-color: #1e88e5; }
@@ -577,7 +567,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     main { grid-template-columns: 1fr; }
     .video { flex: none; aspect-ratio: 4 / 3; max-height: 70vh; }
     .scroll { max-height: 50vh; }
-    .charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .charts canvas { flex: none; height: 120px; }
   }
 </style>
 </head>
@@ -594,12 +584,6 @@ DASHBOARD_HTML = r"""<!doctype html>
       <img id="video" alt="カメラ映像">
       <div class="msg" id="videoMsg">接続中…</div>
     </div>
-    <div class="charts">
-      <canvas id="chartTemp"></canvas>
-      <canvas id="chartCpu"></canvas>
-      <canvas id="chartMem"></canvas>
-      <canvas id="chartFps"></canvas>
-    </div>
   </section>
   <div class="side">
     <section>
@@ -614,9 +598,11 @@ DASHBOARD_HTML = r"""<!doctype html>
       </form>
       <div class="kv" id="opMsg"></div>
     </section>
-    <section>
-      <h2>機器の状態</h2>
-      <div class="devices" id="devices"></div>
+    <section class="charts">
+      <canvas id="chartTemp" aria-label="温度の推移"></canvas>
+      <canvas id="chartCpu" aria-label="CPU 使用率の推移"></canvas>
+      <canvas id="chartMem" aria-label="メモリ使用率の推移"></canvas>
+      <canvas id="chartFps" aria-label="fps の推移"></canvas>
     </section>
   </div>
 </main>
@@ -651,9 +637,10 @@ let metrics = { camera: [], display: [], hub: [] };
 // ─── 時系列グラフ(直近 10 分。時間軸は毎秒流す) ───
 const WINDOW_SEC = 600;
 const SERIES = {
-  camera: { label: 'pi_b(カメラ)', color: '#42a5f5' },
-  display: { label: 'pi_a(LCD)', color: '#ffa726' },
-  hub: { label: 'ハブ(推論)', color: '#66bb6a' },
+  // 右の列は狭いので短い名前にする(pi_a: 円形 LCD、pi_b: カメラ、ハブ: 推論)
+  camera: { label: 'pi_b', color: '#42a5f5' },
+  display: { label: 'pi_a', color: '#ffa726' },
+  hub: { label: 'ハブ', color: '#66bb6a' },
 };
 const CHARTS = [
   { id: 'chartTemp', title: '温度 °C', key: 'temp', devices: ['display', 'camera'], min: 40, max: 90, guide: 80 },
@@ -732,54 +719,11 @@ function drawCharts() {
   for (const chart of CHARTS) drawChart(chart, now);
 }
 
-// 温度・CPU・メモリの値と、注意が要るかどうか
-function level(value, warn, alert) { return value == null ? '' : value >= alert ? 'alert' : value >= warn ? 'warnv' : ''; }
-
-function throttleText(bits) {
-  if (bits == null) return ['', ''];
-  // 下位 4 ビット: いま起きている(低電圧・周波数制限・スロットリング・温度による制限)
-  if (bits & 0xF) return ['スロットリング中 0x' + bits.toString(16), 'alert'];
-  if (bits & 0xF0000) return ['起動後にスロットリングあり 0x' + bits.toString(16), 'warnv'];
-  return ['スロットリングなし', ''];
-}
-
-function fmtUptime(sec) {
-  if (sec == null) return '';
-  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
-  return `稼働 ${d ? d + '日' : ''}${h}時間${m}分`;
-}
-
 function el(tag, className, text) {
   const e = document.createElement(tag);
   if (className) e.className = className;
   if (text != null) e.textContent = text;
   return e;
-}
-
-function device(name, info, lines) {
-  const div = el('div', 'device');
-  const head = el('b');
-  head.append(el('span', 'dot' + (info.connected ? ' ok' : '')), name);
-  const sys = info.system;
-  if (sys?.host) head.append(el('span', 'kv', sys.host));
-  div.append(head);
-  if (sys && info.connected) {
-    const tiles = el('div', 'tiles');
-    for (const [label, value, text, lv] of [
-      ['温度', sys.temp, n(sys.temp, 1, '°C'), level(sys.temp, 75, 80)],
-      ['CPU', sys.cpu, n(sys.cpu, 0, '%'), level(sys.cpu, 70, 90)],
-      ['メモリ', sys.memory, n(sys.memory, 0, '%'), level(sys.memory, 80, 90)],
-    ]) {
-      const tile = el('div', 'tile ' + lv);
-      tile.append(el('span', 'kv', label), el('span', 'value', text));
-      tiles.append(tile);
-    }
-    div.append(tiles);
-    const [ttext, tlv] = throttleText(sys.throttled);
-    div.append(el('div', 'kv ' + tlv, [ttext, fmtUptime(sys.uptime)].filter(Boolean).join('  ')));
-  }
-  for (const [text, warn] of lines) if (text) div.append(el('div', 'kv' + (warn ? ' warn' : ''), text));
-  return div;
 }
 
 async function refreshState() {
@@ -791,20 +735,7 @@ async function refreshState() {
     else { $('videoMsg').hidden = false; $('videoMsg').textContent = s.camera.connected ? '映像を待っています…' : 'カメラ配信に接続していません'; }
     if (!streaming) { streaming = true; video.src = '/stream.mjpg?t=' + Date.now(); }
 
-    const cam = s.camera.camera ?? {};
     const disp = s.display.display ?? {};
-    $('devices').replaceChildren(
-      device('カメラ(pi_b)', s.camera, [
-        [`${cam.running ? '撮影中' : '停止'}  H.264 ${n(cam.fps?.h264, 1, 'fps')} / MJPEG ${n(cam.fps?.mjpeg, 1, 'fps')}`, !cam.running && s.camera.connected],
-        ...(cam.error ? [[cam.error, true]] : []),
-      ]),
-      device('表示・円形 LCD(pi_a)', s.display, [
-        [s.display.connected ? `モード ${disp.mode}(表示中: ${disp.showing})  ${n(disp.fps, 1, 'fps')}` : '', false],
-      ]),
-      device('ハブ(推論)', { connected: true }, [
-        [`推論 ${n(s.hub.inference_fps, 1, 'fps')}  ${n(s.hub.inference_ms, 0, 'ms')}/回`, false],
-      ]),
-    );
     for (const b of document.querySelectorAll('[data-mode]')) b.setAttribute('aria-pressed', String(disp.mode === b.dataset.mode));
   } catch (e) {
     $('videoMsg').hidden = false; $('videoMsg').textContent = 'ハブに接続できません';
