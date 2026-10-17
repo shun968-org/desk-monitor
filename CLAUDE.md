@@ -6,15 +6,17 @@ Raspberry Pi(`ssh pi_a`、ホスト名 node-a-local)で動くデスクトップ�
 Pi 上のホームディレクトリにあったファイルを `scp` で取り込んだもの。**実機の正は Pi 側**であり、
 変更を反映するときは `scp` で Pi に戻す。
 
-- `show_face.py`: GC9A01 ディスプレイ(240x240)に表情画像(`faces/`)を表示する常駐スクリプト
+- `show_face.py`: GC9A01 ディスプレイ(240x240)に表情アニメーション(`faces/`)またはカメラ映像を表示する常駐スクリプト。
+  systemd ユーザーサービス `desk-monitor-display`(`deploy/systemd/`)として動く。モード切替は SIGUSR1(face)/ SIGUSR2(camera)
+- `object_detector.py`: camera モードの物体検出(YOLO11n / ONNX Runtime)。モデルは `scripts/export_yolo.sh` で生成し Pi の `~/models/` に置く
 - `trend_monitor.py` / `trend_config.json`: Bluesky・Google Trends・RSS からトレンドを監視する
-- `otomo_control_server.py` / `otomo_ble_provisioning_server.py`: 制御サーバと BLE プロビジョニング
 - `show_camera.py` / `show_image.py`: カメラ・画像表示のユーティリティ
 
 ## 依存関係
 
 - `requirements.txt`: コンテナ・開発機でも入る依存
-- `requirements-pi.txt`: Pi 実機専用(gpiozero, spidev, picamera2 等)。`dbus-python` / `gi` は apt で入れる
+- `requirements-pi.txt`: Pi 実機専用(gpiozero, spidev, picamera2, onnxruntime 等)。表示サービスは `~/otomo_venv` で動く
+- スマホアプリとの連携はない前提(mDNS / WebSocket の制御サーバと BLE プロビジョニングは削除済み)
 - Python は Pi と同じ 3.13 系
 
 ## 開発規約
