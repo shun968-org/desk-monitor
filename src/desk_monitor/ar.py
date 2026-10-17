@@ -20,16 +20,16 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from geographiclib.geodesic import Geodesic
+
 log = logging.getLogger(__name__)
 
-EARTH_RADIUS_M = 6_371_000.0
 OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
 # 観光地のデータを取り直す間隔
 REFRESH_SEC = 7 * 86400
@@ -107,20 +107,14 @@ class Poi:
 
 
 def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """2 点間の大圏距離(m)。"""
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp, dl = p2 - p1, math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(a))
+    """2 点間の距離(m。WGS84 楕円体上の測地線)。"""
+    return Geodesic.WGS84.Inverse(lat1, lon1, lat2, lon2, Geodesic.DISTANCE)['s12']
 
 
 def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """地点 1 から地点 2 への方位(度。北 0、時計回り)。"""
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dl = math.radians(lon2 - lon1)
-    y = math.sin(dl) * math.cos(p2)
-    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
-    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+    """地点 1 から地点 2 への方位(度。北 0、時計回り、0〜360)。"""
+    azimuth = Geodesic.WGS84.Inverse(lat1, lon1, lat2, lon2, Geodesic.AZIMUTH)['azi1']
+    return azimuth % 360.0
 
 
 def describe(config: CameraConfig, pois: list[Poi]) -> list[dict]:

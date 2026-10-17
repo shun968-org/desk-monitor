@@ -56,6 +56,8 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
 - `wire.py`: 機器間の通信(JSON ヘッダ + ペイロード、hello でトークン認証)
 - `tools/show_camera.py` / `tools/show_image.py`: カメラ・画像表示の単発ユーティリティ(表示サービスを止めてから使う)
 - 素材は `assets/`(`faces/` の表情画像、`fonts/` の IPAex ゴシックとライセンス)
+- ダッシュボードの部品は、商用利用できるライセンスの定番ライブラリを CDN から読む(Leaflet・leaflet.control.layers.tree・
+  uPlot・noUiSlider・d3-contour・Notyf・Turf.js・three.js)。版は固定する。独自に実装する前に、置き換えられるライブラリがないかを先に検討する
 - ハードウェア依存(spidev / gpiozero / picamera2 / onnxruntime / av)の import は使う箇所まで遅延させ、
   それ以外のモジュールは開発機・CI で import できるようにしておく
 
