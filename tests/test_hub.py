@@ -61,7 +61,7 @@ def test_state_snapshot_and_jpeg():
     assert snap['detections'] == [{'label': '人', 'score': 0.8}]
     assert snap['present'][0]['label'] == '人'
     from desk_monitor.fonts import get_font
-    assert state.annotated_jpeg(get_font(16))[:2] == b'\xff\xd8'
+    assert state.annotated_jpeg(lambda width: get_font(16))[:2] == b'\xff\xd8'
 
     state.expire(time.time() + 10)  # 推論結果が途絶えたら記録を締める
     assert state.snapshot()['present'] == []
@@ -217,3 +217,14 @@ def test_notifications_since(dashboard):
     assert [x['text'] for x in json.loads(body)['notifications']] == ['新しい', 'もっと新しい']
     status, body = _request(addr, 'GET', '/api/notifications?since=bad')
     assert len(json.loads(body)['notifications']) == 3
+
+
+def test_stabilizer_requires_consecutive_detections():
+    stab = hub.DetectionStabilizer(confirm=2)
+    cat = Detection(10, 10, 50, 50, 0.6, 15)
+    assert stab.update([cat]) == []                      # 1 回目はまだ出さない
+    moved = Detection(12, 12, 52, 52, 0.7, 15)
+    assert stab.update([moved]) == [moved]               # ほぼ同じ位置に続けて出たら出す
+    assert stab.update([Detection(12, 12, 52, 52, 0.7, 16)]) == []  # 種類が変わったら出さない
+    assert stab.update([Detection(200, 200, 240, 240, 0.7, 16)]) == []  # 位置が離れていたら出さない
+    assert hub.DetectionStabilizer(confirm=1).update([cat]) == [cat]   # 1 ならそのまま

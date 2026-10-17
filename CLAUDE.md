@@ -9,9 +9,9 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
 |---|---|---|---|
 | `pi_a`(node-a-local、192.168.10.113) | display | 円形 LCD(GC9A01)の表示とトレンド監視 | `desk-monitor-display` / `desk-monitor-trend` |
 | `pi_b`(node-b-local、192.168.10.111) | camera | カメラ(ov5647)の映像を H.264 / MJPEG で配信 | `desk-monitor-camera` |
-| 開発 PC(この PC) | hub | 物体検出(YOLO11m、入力 640)とダッシュボード(http://127.0.0.1:8090/) | Docker(`deploy/hub/`) |
+| 開発 PC(この PC) | hub | 物体検出(D-FINE-L、入力 640)とダッシュボード(http://127.0.0.1:8090/) | Docker(`deploy/hub/`) |
 
-映像は pi_b → pi_a(MJPEG 320x240)と pi_b → ハブ(H.264 640x480)に流れ、検出結果(全視野に対する 0〜1 の座標)は
+映像は pi_b → pi_a(MJPEG 320x240)と pi_b → ハブ(H.264 1280x960)に流れ、検出結果(全視野に対する 0〜1 の座標)は
 ハブ → pi_a に流れる。ハブが止まっていても LCD は枠なしで映像を出す。
 
 **正はこのリポジトリ**であり、Pi への反映は `scripts/deploy.sh [host] [role]`(`pi_a` は display、`pi_b` は camera が既定)、
@@ -35,8 +35,10 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
   映像の向きは `--vflip` / `--hflip`
 - `hub.py`(開発 PC): H.264 を復号(PyAV)して推論し(`detector.py`、ONNX Runtime)、結果を pi_a に送る。
   ダッシュボードは 127.0.0.1 だけで待ち受け、履歴は `~/.local/share/desk-monitor/hub.sqlite3`。
-  モデルは YOLO11m(入力 640、`models/yolo11m.onnx`、git 管理外)。`scripts/export_yolo.sh` で作り、`DESK_MONITOR_MODEL` で切り替えられる
-  (開発 PC の CPU 4 スレッドで n 49ms / s 103ms / m 273ms / l 339ms。精度と頻度の兼ね合いで m)
+  モデルは D-FINE-L(Objects365 で事前学習、`models/dfine_l_obj2coco.onnx`、git 管理外。`scripts/export_dfine.sh` で作る)。
+  YOLO11(`scripts/export_yolo.sh`)にも `DESK_MONITOR_MODEL` で切り替えられ、`detector.load_detector` が種類を判別する。
+  実際の映像(1280x960)での比較: YOLO11m 315ms・誤検出多め、D-FINE-L 375ms・最も安定、D-FINE-X 700ms・かえって不安定。
+  D-FINE の obj2coco の重みは Objects365 の利用条件を受ける可能性がある(商用利用は要確認)
 - `trend.py`(pi_a): Bluesky・Google Trends・RSS からトレンドを監視し、表示プロセス経由でハブに通知を送る(ダッシュボードにトースト表示。円形 LCD には出さない)。
   設定は `config/trend_config.json`
 - `wire.py`: 機器間の通信(JSON ヘッダ + ペイロード、hello でトークン認証)

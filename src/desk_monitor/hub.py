@@ -4,7 +4,8 @@
                                                           │
                                                           └──▶ ダッシュボード(http://127.0.0.1:8090/)
 
-- カメラ配信サーバから全視野の H.264 を受けて復号し(PyAV)、YOLO で毎フレーム推論する
+- カメラ配信サーバから全視野の H.264 を受けて復号し(PyAV)、物体検出(既定 D-FINE-L)を繰り返す。
+  一瞬だけ出る誤検出は DetectionStabilizer で抑える
 - 検出結果(全視野に対する 0〜1 の座標)を表示プロセスに送り、円形 LCD に枠を重ねさせる
 - 表示プロセスに操作(モード切替)を送り、状態とトレンド監視の通知を受け取る
 - ダッシュボードに、検出枠つきの映像・各機器の状態・検出と通知の履歴・操作をまとめる
@@ -18,7 +19,7 @@
   DESK_MONITOR_DISPLAY_ADDR(例 192.168.10.113:8083)
 
 使い方(リポジトリ直下で。通常は deploy/hub の Docker で動かす):
-    PYTHONPATH=src python3 -m desk_monitor.hub [--port 8090] [--model models/yolo11m.onnx]
+    PYTHONPATH=src python3 -m desk_monitor.hub [--port 8090] [--model models/dfine_l_obj2coco.onnx]
 """
 from __future__ import annotations
 
@@ -41,14 +42,15 @@ import numpy as np
 from PIL import Image
 
 from desk_monitor import sysstat, wire
-from desk_monitor.detector import (COCO_LABELS_JA, Detection, DetectionWorker, YoloDetector,
-                                   draw_detections)
+from desk_monitor.detector import (COCO_LABELS_JA, Detection, DetectionWorker, draw_detections,
+                                   load_detector)
 from desk_monitor.fonts import get_font
 from desk_monitor.paths import MODELS_DIR
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = MODELS_DIR / 'yolo11m.onnx'
+# D-FINE-L(Objects365 で事前学習、COCO AP 57.3)。実際の映像で YOLO11m より誤検出が少なかった
+DEFAULT_MODEL = MODELS_DIR / 'dfine_l_obj2coco.onnx'
 # 機器の状態の推移を残す長さ(状態は約 2 秒ごとに届く)
 METRICS_SEC = 600
 DEFAULT_DB = Path.home() / '.local' / 'share' / 'desk-monitor' / 'hub.sqlite3'
@@ -123,6 +125,31 @@ class History:
             'notifications': [dict(zip(('at', 'source', 'text'), r)) for r in notifications],
             'counts_24h': [{'label': label, 'count': n} for label, n in counts],
         }
+
+
+def _iou(a: Detection, b: Detection) -> float:
+    ix = max(0.0, min(a.x2, b.x2) - max(a.x1, b.x1))
+    iy = max(0.0, min(a.y2, b.y2) - max(a.y1, b.y1))
+    inter = ix * iy
+    union = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter
+    return inter / union if union > 0 else 0.0
+
+
+class DetectionStabilizer:
+    """一瞬だけ出る誤検出を抑える。同じ種類がほぼ同じ位置に confirm 回続けて出たものだけを通す。"""
+
+    def __init__(self, confirm: int = 2, iou: float = 0.3) -> None:
+        self._confirm = max(1, confirm)
+        self._iou = iou
+        self._history: collections.deque[list[Detection]] = collections.deque(maxlen=self._confirm - 1)
+
+    def update(self, detections: list[Detection]) -> list[Detection]:
+        stable = [d for d in detections
+                  if all(any(p.class_id == d.class_id and _iou(p, d) >= self._iou for p in frame)
+                         for frame in self._history)
+                  and len(self._history) == self._confirm - 1]
+        self._history.append(detections)
+        return stable
 
 
 class PresenceTracker:
@@ -244,7 +271,7 @@ class HubState:
         if frame is None:
             return None
         if detections:
-            frame = draw_detections(frame, detections, font, circular=False)
+            frame = draw_detections(frame, detections, font(frame.shape[1]), circular=False)
         buf = io.BytesIO()
         Image.fromarray(frame).save(buf, format='JPEG', quality=80)
         return buf.getvalue()
@@ -498,8 +525,15 @@ class DashboardServer(ThreadingHTTPServer):
     def __init__(self, addr: tuple[str, int], state: HubState, display: DisplayLink) -> None:
         self.state = state
         self.display = display
-        self.font = get_font(16)
+        self._fonts: dict[int, object] = {}
         super().__init__(addr, _DashboardHandler)
+
+    def font(self, width: int):
+        """映像の幅に合わせたラベルの文字(640 幅で 16px)。"""
+        size = max(12, round(16 * width / 640))
+        if size not in self._fonts:
+            self._fonts[size] = get_font(size)
+        return self._fonts[size]
 
 
 DASHBOARD_HTML = r"""<!doctype html>
@@ -860,8 +894,10 @@ def main() -> None:
     parser.add_argument('--model', type=Path,
                         default=Path(os.environ.get('DESK_MONITOR_MODEL', DEFAULT_MODEL)),
                         help=f'ONNX モデル (既定: 環境変数 DESK_MONITOR_MODEL、なければ {DEFAULT_MODEL})')
-    parser.add_argument('--conf', type=float, default=0.4, help='信頼度しきい値 (既定: 0.4)')
+    parser.add_argument('--conf', type=float, default=0.5, help='信頼度しきい値 (既定: 0.5)')
     parser.add_argument('--threads', type=int, default=4, help='推論のスレッド数 (既定: 4)')
+    parser.add_argument('--confirm', type=int, default=2,
+                        help='同じ物が何回続けて検出されたら表示するか。誤検出のちらつきを抑える (既定: 2)')
     parser.add_argument('--db', type=Path, default=Path(os.environ.get('DESK_MONITOR_DB', DEFAULT_DB)),
                         help=f'履歴の SQLite (既定: {DEFAULT_DB})')
     args = parser.parse_args()
@@ -882,15 +918,19 @@ def main() -> None:
     state = HubState(History(args.db))
     display = DisplayLink(display_addr, token, state)
 
+    stabilizer = DetectionStabilizer(args.confirm)
+
     def on_result(frame: np.ndarray, detections: list[Detection]) -> None:
+        detections = stabilizer.update(detections)
         height, width = frame.shape[:2]
         state.set_detections(detections, time.time(), worker.inference_sec * 1000)
         display.send_detections(detections, width, height)
 
     worker = None
     if args.model.is_file():
-        worker = DetectionWorker(YoloDetector(args.model, conf_threshold=args.conf,
-                                              num_threads=args.threads), on_result=on_result)
+        worker = DetectionWorker(load_detector(args.model, args.conf, args.threads),
+                                 on_result=on_result)
+        log.info('物体検出のモデル: %s', args.model.name)
     else:
         log.warning('モデルが見つからないため物体検出をしません: %s', args.model)
 

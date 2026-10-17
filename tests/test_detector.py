@@ -189,3 +189,45 @@ def test_draw_detections(blank_frame):
     assert out.shape == blank_frame.shape
     assert out[140, 60].any()  # 枠の左辺
     assert not out[140, 120].any()  # 枠の内側は塗らない
+
+
+class FakeSession:
+    """onnxruntime.InferenceSession の代わり。D-FINE と同じ入出力を持つ。"""
+
+    def __init__(self, outputs=None, inputs=('images', 'orig_target_sizes')) -> None:
+        self._inputs = inputs
+        self._outputs = outputs
+        self.fed = None
+
+    def get_inputs(self):
+        return [type('I', (), {'name': n, 'shape': [1, 3, 640, 640] if n == 'images' else [1, 2]})()
+                for n in self._inputs]
+
+    def run(self, names, feed):
+        self.fed = feed
+        return self._outputs
+
+
+def test_dfine_detector_resizes_and_filters():
+    # 枠はモデルが元の画像の画素座標で返す(orig_target_sizes に元の [W, H] を渡す)
+    labels = np.array([[15, 0, 2]])
+    boxes = np.array([[[128, 96, 640, 480], [0, 0, 10, 10], [-5, 100, 2000, 200]]], dtype=np.float32)
+    scores = np.array([[0.9, 0.2, 0.5]], dtype=np.float32)
+    session = FakeSession([labels, boxes, scores])
+    d = detector.DFineDetector(session, conf_threshold=0.4)
+    rgb = np.full((960, 1280, 3), 255, dtype=np.uint8)
+    dets = d.detect(rgb)
+    assert [x.class_id for x in dets] == [15, 2]  # 信頼度の高い順、しきい値未満は除く
+    assert (dets[0].x1, dets[0].y1, dets[0].x2, dets[0].y2) == pytest.approx((128, 96, 640, 480))
+    assert (dets[1].x1, dets[1].x2) == (0.0, 1279.0)  # 画像の外ははみ出さない
+    assert session.fed['images'].shape == (1, 3, 640, 640)
+    assert session.fed['images'][0, 0, 0, 0] == pytest.approx(1.0)  # 余白なしで引き伸ばす
+    assert session.fed['orig_target_sizes'].tolist() == [[1280, 960]]
+
+
+def test_load_detector_picks_model_type(monkeypatch):
+    monkeypatch.setattr(detector, '_create_session', lambda path, threads: FakeSession())
+    assert isinstance(detector.load_detector('m.onnx'), detector.DFineDetector)
+    yolo_session = FakeSession(inputs=('images',))
+    monkeypatch.setattr(detector, '_create_session', lambda path, threads: yolo_session)
+    assert isinstance(detector.load_detector('m.onnx'), detector.YoloDetector)

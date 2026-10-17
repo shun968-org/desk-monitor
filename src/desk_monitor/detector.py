@@ -5,9 +5,11 @@
 推論は別スレッド (DetectionWorker) で最新フレームに対して繰り返し実行し、呼び出し側は
 直近の検出結果を重ねて描くだけにすることで、推論が映像のフレームレートを落とさないようにする。
 
-モデルは Ultralytics YOLO11n を ONNX に書き出したものを想定する(入力サイズはモデルから読む)
-（出力 (1, 84, N): 先頭 4 行が cx, cy, w, h、残り 80 行が COCO 各クラスのスコア）。
-書き出し手順は scripts/export_yolo.sh を参照。
+モデルは ONNX で、load_detector が入力名から種類を判別する(入力サイズはモデルから読む)。
+  - YOLO11(Ultralytics): 出力 (1, 84, N)。先頭 4 行が cx, cy, w, h、残り 80 行が COCO 各クラスのスコア。
+    書き出しは scripts/export_yolo.sh
+  - D-FINE(DETR 系): 入力 images と orig_target_sizes、出力 labels / boxes / scores。
+    書き出しは scripts/export_dfine.sh
 
 依存パッケージ:
     pip install onnxruntime
@@ -62,24 +64,83 @@ class Detection:
         return f'#{self.class_id}'
 
 
+def _create_session(model_path: Path, num_threads: int):
+    import onnxruntime as ort  # 検出を使うときだけ必要なので遅延 import
+
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = num_threads
+    opts.inter_op_num_threads = 1
+    # 既定ではワーカースレッドが待機中もスピンして CPU を使い続けるため、待機中は眠らせる
+    opts.add_session_config_entry('session.intra_op.allow_spinning', '0')
+    return ort.InferenceSession(str(model_path), sess_options=opts,
+                                providers=['CPUExecutionProvider'])
+
+
+def load_detector(model_path: Path, conf_threshold: float = 0.4, num_threads: int = 4):
+    """ONNX モデルの入力から種類を判別して、YOLO か D-FINE の検出器を作る。"""
+    session = _create_session(model_path, num_threads)
+    names = {i.name for i in session.get_inputs()}
+    if 'orig_target_sizes' in names:
+        return DFineDetector(session, conf_threshold=conf_threshold)
+    return YoloDetector(model_path, conf_threshold=conf_threshold, session=session)
+
+
+def _letterbox(rgb: np.ndarray, width: int, height: int, pad_value: int
+               ) -> tuple[np.ndarray, float, int, int]:
+    """アスペクト比を保って縮小し、余白を pad_value で埋めて width x height にする。"""
+    h, w = rgb.shape[:2]
+    scale = min(width / w, height / h)
+    new_w, new_h = round(w * scale), round(h * scale)
+    if (new_w, new_h) != (w, h):
+        rgb = np.asarray(Image.fromarray(rgb).resize((new_w, new_h), Image.BILINEAR))
+    pad_x, pad_y = (width - new_w) // 2, (height - new_h) // 2
+    canvas = np.full((height, width, 3), pad_value, dtype=np.uint8)
+    canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = rgb
+    return canvas, scale, pad_x, pad_y
+
+
+class DFineDetector:
+    """D-FINE(DETR 系)の ONNX モデルで 1 フレームを推論する。
+
+    出力は信頼度の高い順に 300 件(labels: 0〜79、boxes: 入力画素の xyxy、scores)で、NMS は要らない。
+    """
+
+    def __init__(self, session, conf_threshold: float = 0.4, max_detections: int = 20) -> None:
+        self._session = session
+        inp = next(i for i in session.get_inputs() if i.name == 'images')
+        self._input_h, self._input_w = int(inp.shape[2]), int(inp.shape[3])
+        self.conf_threshold = conf_threshold
+        self.max_detections = max_detections
+
+    def detect(self, rgb: np.ndarray) -> list[Detection]:
+        # D-FINE の評価時の前処理と同じく、アスペクト比を保たずに入力サイズへ引き伸ばす。
+        # orig_target_sizes に元の [W, H] を渡すと、枠は元の画像の画素座標で返る
+        img_h, img_w = rgb.shape[:2]
+        resized = np.asarray(Image.fromarray(rgb).resize((self._input_w, self._input_h), Image.BILINEAR))
+        tensor = resized.transpose(2, 0, 1)[np.newaxis].astype(np.float32) / 255.0
+        sizes = np.array([[img_w, img_h]], dtype=np.int64)
+        labels, boxes, scores = self._session.run(
+            ['labels', 'boxes', 'scores'], {'images': tensor, 'orig_target_sizes': sizes})
+        detections = []
+        for label, box, score in zip(labels[0], boxes[0], scores[0]):
+            if score < self.conf_threshold:
+                continue
+            x1, y1, x2, y2 = box.tolist()
+            x1, x2 = max(0.0, x1), min(img_w - 1.0, x2)
+            y1, y2 = max(0.0, y1), min(img_h - 1.0, y2)
+            if x2 > x1 and y2 > y1:
+                detections.append(Detection(x1, y1, x2, y2, float(score), int(label)))
+        detections.sort(key=lambda d: d.score, reverse=True)
+        return detections[:self.max_detections]
+
+
 class YoloDetector:
     """YOLO の ONNX モデルで 1 フレームを推論する。"""
 
     def __init__(self, model_path: Path, conf_threshold: float = 0.4,
                  iou_threshold: float = 0.45, max_detections: int = 10,
-                 num_threads: int = 3) -> None:
-        import onnxruntime as ort  # 検出を使うときだけ必要なので遅延 import
-
-        opts = ort.SessionOptions()
-        # 4 コアのうち 1 つは表示ループ（SPI 転送）に残す
-        opts.intra_op_num_threads = num_threads
-        opts.inter_op_num_threads = 1
-        # 既定ではワーカースレッドが待機中もスピンして CPU を使い続け、推論を間引いても
-        # 発熱が下がらないため、待機中は眠らせる
-        opts.add_session_config_entry('session.intra_op.allow_spinning', '0')
-        self._session = ort.InferenceSession(
-            str(model_path), sess_options=opts, providers=['CPUExecutionProvider'],
-        )
+                 num_threads: int = 3, session=None) -> None:
+        self._session = session or _create_session(model_path, num_threads)
         inp = self._session.get_inputs()[0]
         self._input_name = inp.name
         self._input_h, self._input_w = int(inp.shape[2]), int(inp.shape[3])
@@ -95,15 +156,7 @@ class YoloDetector:
 
     def _preprocess(self, rgb: np.ndarray) -> tuple[np.ndarray, float, int, int]:
         """アスペクト比を保って縮小し、余白を灰色で埋めて入力サイズに合わせる。"""
-        h, w = rgb.shape[:2]
-        scale = min(self._input_w / w, self._input_h / h)
-        new_w, new_h = round(w * scale), round(h * scale)
-        if (new_w, new_h) != (w, h):
-            rgb = np.asarray(Image.fromarray(rgb).resize((new_w, new_h), Image.BILINEAR))
-        pad_x = (self._input_w - new_w) // 2
-        pad_y = (self._input_h - new_h) // 2
-        canvas = np.full((self._input_h, self._input_w, 3), _PAD_VALUE, dtype=np.uint8)
-        canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = rgb
+        canvas, scale, pad_x, pad_y = _letterbox(rgb, self._input_w, self._input_h, _PAD_VALUE)
         tensor = canvas.transpose(2, 0, 1)[np.newaxis].astype(np.float32) / 255.0
         return tensor, scale, pad_x, pad_y
 

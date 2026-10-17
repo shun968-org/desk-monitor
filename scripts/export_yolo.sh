@@ -3,10 +3,10 @@
 # ハブ(desk_monitor.hub、開発 PC)の物体検出で使う YOLO11 を ONNX に書き出し、models/<モデル名>.onnx に置く。
 # 開発機の Python 環境を汚さないよう Docker コンテナ内で ultralytics を使う。
 #
-# 使い方: scripts/export_yolo.sh [モデル名 ...]   (既定: yolo11m。例: yolo11n yolo11s yolo11m)
+# 使い方: scripts/export_yolo.sh [モデル名 ...]   (既定: yolo11m。例: yolo11n yolo11s yolo11m。ハブの既定は D-FINE-L: scripts/export_dfine.sh)
 #   入力サイズは環境変数 IMGSZ(既定 640)
 # 反映: scripts/deploy-hub.sh(models/ をコンテナにマウントしている。使うモデルは
-#       ~/.config/desk-monitor/desk-monitor.env の DESK_MONITOR_MODEL、既定 models/yolo11m.onnx)
+#       ~/.config/desk-monitor/desk-monitor.env の DESK_MONITOR_MODEL で指定する)
 
 set -euo pipefail
 

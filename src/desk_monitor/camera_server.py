@@ -2,7 +2,7 @@
 
 Pi 3 のハードウェアエンコーダで 2 本のストリームを作り、接続してきた相手に送る。CPU はほとんど使わない。
 
-  h264  : 全視野 640x480 の H.264。ハブ(開発 PC)が受けて物体検出とダッシュボードに使う
+  h264  : 全視野 1280x960 の H.264。ハブ(開発 PC)が受けて物体検出とダッシュボードに使う
   mjpeg : 全視野 320x240 の MJPEG。表示用の Pi が受けて、中央の正方形を円形 LCD に出す
 
 どちらも同じ全視野(4:3)なので、ハブが返す正規化座標(0〜1)の検出枠をそのまま重ねられる。
@@ -38,8 +38,10 @@ from desk_monitor import sysstat, wire
 
 log = logging.getLogger(__name__)
 
-MAIN_SIZE = (640, 480)
+MAIN_SIZE = (1280, 960)
 LORES_SIZE = (320, 240)
+# ov5647 の 1296x972 モード(全視野を 2x2 ビニング)。640x480 モードは画素を間引くため細部がつぶれ、検出精度が落ちる
+SENSOR_SIZE = (1296, 972)
 STREAMS = ('h264', 'mjpeg')
 STATUS_SEC = 2.0
 # 送信待ちがこれを超えた相手は、溜まった分を捨てる(遅い相手のために遅延を溜めない)
@@ -178,13 +180,14 @@ class CameraRunner:
         try:
             config = cam.create_video_configuration(
                 main={'size': MAIN_SIZE, 'format': 'YUV420'},
+                sensor={'output_size': SENSOR_SIZE, 'bit_depth': 10},
                 lores={'size': LORES_SIZE, 'format': 'YUV420'},
                 transform=Transform(vflip=self._vflip, hflip=self._hflip),
                 controls={'FrameRate': self._fps},
             )
             cam.configure(config)
             iperiod = max(1, round(self._fps))  # 途中から受けた相手も約 1 秒で映り始める
-            cam.start_encoder(H264Encoder(bitrate=2_000_000, repeat=True, iperiod=iperiod),
+            cam.start_encoder(H264Encoder(bitrate=5_000_000, repeat=True, iperiod=iperiod),
                               make_output(self._broadcasters['h264']), name='main')
             cam.start_encoder(MJPEGEncoder(bitrate=4_000_000),
                               make_output(self._broadcasters['mjpeg']), name='lores')
