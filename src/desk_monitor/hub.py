@@ -643,8 +643,10 @@ DASHBOARD_HTML = r"""<!doctype html>
   .map-row { flex: 1; min-height: 0; display: flex; gap: 8px; }
   #map { flex: 1; min-width: 0; min-height: 160px; border-radius: 6px; background: #222; position: relative;
          z-index: 0; isolation: isolate; }
-  .layer-box { flex: none; width: 200px; overflow: auto; }
-  .layer-box .leaflet-control-layers { margin: 0; box-shadow: none; }
+  /* レイヤの操作パネルは地図と同じ高さにし、中身が多ければ中だけをスクロールする */
+  .layer-box { flex: none; width: 200px; display: flex; min-height: 0; }
+  .layer-box .leaflet-control-layers { margin: 0; box-shadow: none; flex: 1; min-height: 0; overflow: auto;
+                                       box-sizing: border-box; }
   #arInfo { margin-top: 4px; }
   #arOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   /* 地図のレイヤの操作パネル(leaflet.control.layers.tree)。行の高さと記号の欄の幅をそろえ、
