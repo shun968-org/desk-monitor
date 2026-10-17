@@ -610,6 +610,17 @@ DASHBOARD_HTML = r"""<!doctype html>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.control.layers.tree@1.2.0/L.Control.Layers.Tree.css">
+<!-- 商用利用できるライセンスのライブラリ: uPlot(MIT、時系列グラフ)、noUiSlider(MIT、距離の範囲)、
+     d3-contour(ISC、等高線)、Notyf(MIT、通知のトースト)、Turf.js(MIT、地図の扇形) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
+<script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-array@3.2.4/dist/d3-array.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-contour@4.0.2/dist/d3-contour.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/notyf@3.10.0/notyf.min.css">
+<script src="https://cdn.jsdelivr.net/npm/notyf@3.10.0/notyf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.1.0/turf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/leaflet.control.layers.tree@1.2.0/L.Control.Layers.Tree.js"></script>
 <style>
   :root { color-scheme: dark; --bg: #111; --panel: #1b1b1b; --line: #2a2a2a; --text: #ddd;
@@ -706,41 +717,39 @@ DASHBOARD_HTML = r"""<!doctype html>
                 -webkit-backdrop-filter: blur(8px); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
   .gizmo-text b { color: #fff; font-weight: 600; }
   .range-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-  .range { position: relative; flex: 1; height: 22px; }
-  .range-track { position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px; background: #333; }
-  .range-fill { position: absolute; top: 0; bottom: 0; background: #ffa726; border-radius: 2px; }
-  /* 2 つの range を重ね、つまみだけ操作できるようにする(1 本のバーで開始〜終了を選ぶ) */
-  .range input { position: absolute; left: 0; width: 100%; top: 0; height: 22px; margin: 0; background: none;
-                 pointer-events: none; -webkit-appearance: none; appearance: none; }
-  .range input::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 14px; height: 14px;
-                 border-radius: 50%; background: #fff; border: 2px solid #ffa726; cursor: pointer; }
-  .range input::-moz-range-thumb { pointer-events: auto; width: 12px; height: 12px; border-radius: 50%;
-                 background: #fff; border: 2px solid #ffa726; cursor: pointer; }
-  .range input::-moz-range-track { background: none; }
-  .range input:focus-visible::-webkit-slider-thumb { outline: 2px solid #42a5f5; }
+  /* 距離の範囲(noUiSlider)を暗い画面に合わせる */
+  .range { flex: 1; margin: 0 8px; }
+  .range.noUi-target { height: 4px; background: #333; border: 0; box-shadow: none; }
+  .range .noUi-connect { background: #ffa726; }
+  .range .noUi-handle { width: 14px !important; height: 14px !important; right: -7px !important; top: -5px !important;
+                        border-radius: 50%; background: #fff; border: 2px solid #ffa726; box-shadow: none; cursor: pointer; }
+  .range .noUi-handle::before, .range .noUi-handle::after { display: none; }
+  .range .noUi-handle:focus-visible { outline: 2px solid #42a5f5; outline-offset: 2px; }
   #rangeText { min-width: 92px; text-align: right; font-variant-numeric: tabular-nums; }
   .device-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
   .device-tabs [role="tab"] { background: none; border: 0; border-bottom: 2px solid transparent;
                               border-radius: 0; padding: 4px 10px; color: var(--muted); }
   .device-tabs [role="tab"][aria-selected="true"] { color: var(--text); border-bottom-color: #42a5f5; }
   .chart-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
-  .chart-panel canvas { flex: 1; min-height: 80px; width: 100%; background: #161616;
-                        border: 1px solid var(--line); border-radius: 6px; display: block; }
+  .chart { flex: 1; min-height: 100px; display: flex; flex-direction: column; background: #161616;
+           border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px 0; }
+  .chart-title { font: 600 11px system-ui, sans-serif; color: #ddd; }
+  .chart-title b { margin-left: 8px; }
+  .chart-plot { flex: 1; min-height: 0; }
+  .chart .u-legend { display: none; }
   button { background: #333; color: var(--text); border: 1px solid #444; border-radius: 6px;
            padding: 4px 12px; cursor: pointer; }
   button[aria-pressed="true"] { background: #1565c0; border-color: #1e88e5; }
   form { display: flex; gap: 6px; margin-top: 6px; }
   input { flex: 1; min-width: 0; background: #222; color: var(--text); border: 1px solid #444;
           border-radius: 6px; padding: 4px 6px; }
-  .toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column;
-            gap: 8px; width: min(360px, calc(100vw - 32px)); pointer-events: none; }
-  .toast { pointer-events: auto; cursor: pointer; background: #263238; border: 1px solid #37474f;
-           border-left: 4px solid var(--src, #90a4ae); border-radius: 6px; padding: 8px 10px;
-           box-shadow: 0 4px 16px #0008; animation: toast-in .2s ease; }
-  .toast .kv { display: block; }
-  .toast.leaving { opacity: 0; transition: opacity .3s ease; }
-  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
-  @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+  /* 通知のトースト(Notyf)。読み上げは Notyf の aria-live の領域が行い、フォーカスは移さない */
+  .notyf { z-index: 200; }
+  .notyf__toast { background: #263238 !important; border-left: 4px solid var(--src, #90a4ae); max-width: 360px;
+                  box-shadow: 0 4px 16px #0008; cursor: pointer; }
+  .notyf__wrapper { padding: 8px 0; }
+  .notyf__message { color: var(--text); font-size: 13px; }
+  .notyf__message small { display: block; color: var(--muted); font-size: 11px; }
   .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 88vw); z-index: 100;
             background: var(--panel); border-left: 1px solid var(--line);
             transform: translateX(100%); transition: transform .2s ease; }
@@ -768,7 +777,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     main { grid-template-columns: 1fr; }
     .video { flex: none; aspect-ratio: 4 / 3; max-height: 70vh; }
     .scroll { max-height: 50vh; }
-    .chart-panel canvas { flex: none; height: 120px; }
+    .chart { flex: none; height: 140px; }
     .map-row { flex-direction: column; }
     #map { min-height: 260px; }
     .layer-box { width: auto; }
@@ -818,19 +827,13 @@ DASHBOARD_HTML = r"""<!doctype html>
       </div>
       <div class="range-row">
         <span class="kv">距離</span>
-        <div class="range" id="rangeBox">
-          <div class="range-track"><div class="range-fill" id="rangeFill"></div></div>
-          <input type="range" id="rangeMin" min="0" max="50" step="0.5" value="0" aria-label="ラベルを出す距離の開始(km)">
-          <input type="range" id="rangeMax" min="0" max="50" step="0.5" value="20" aria-label="ラベルを出す距離の終了(km)">
-        </div>
+        <div class="range" id="rangeBox"></div>
         <span class="kv" id="rangeText"></span>
       </div>
       <div class="kv" id="arInfo"></div>
     </section>
   </div>
 </main>
-<!-- 通知のトースト。読み上げはするがフォーカスは移さない(フォーカスを受け取る要素を置かない) -->
-<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <!-- サイドパネル(通常は閉じておき、画面の右端のタブで開く。タブごとに中身を切り替える) -->
 <aside class="drawer" id="drawer" aria-labelledby="drawerTitle">
   <!-- 画面の右端に出ているタブ。パネルの左端に付いていて、開くと一緒に動く -->
@@ -857,9 +860,9 @@ DASHBOARD_HTML = r"""<!doctype html>
           <button role="tab" id="tab-hub" data-device="hub" aria-selected="false" aria-controls="chartsPanel" tabindex="-1">開発PC</button>
         </div>
         <div class="chart-panel" id="chartsPanel" role="tabpanel" aria-labelledby="tab-display">
-          <canvas id="chartTemp" aria-label="温度の推移"></canvas>
-          <canvas id="chartCpu" aria-label="CPU 使用率の推移"></canvas>
-          <canvas id="chartMem" aria-label="メモリ使用率の推移"></canvas>
+          <div class="chart" id="chartTemp" role="img" aria-label="温度の推移"><div class="chart-title"></div><div class="chart-plot"></div></div>
+          <div class="chart" id="chartCpu" role="img" aria-label="CPU 使用率の推移"><div class="chart-title"></div><div class="chart-plot"></div></div>
+          <div class="chart" id="chartMem" role="img" aria-label="メモリ使用率の推移"><div class="chart-title"></div><div class="chart-plot"></div></div>
         </div>
       </div>
     </div>
@@ -895,66 +898,67 @@ const CHARTS = [
   { id: 'chartMem', title: 'メモリ %', key: 'memory', min: 0, max: 100, digits: 0 },
 ];
 
-function drawChart(chart, now) {
-  const canvas = $(chart.id);
-  if (!canvas) return;
-  const device = DEVICES[selectedDevice];
-  const ratio = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = canvas.clientHeight;
-  if (!w || !h) return;
-  if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) {
-    canvas.width = Math.round(w * ratio); canvas.height = Math.round(h * ratio);
-  }
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  const left = 30, right = 6, top = 18, bottom = 14;
-  const pw = w - left - right, ph = h - top - bottom;
-  const series = (metrics[selectedDevice] ?? []).filter((p) => p[chart.key] != null && now - p.t <= WINDOW_SEC + 5);
-  const guide = chart.key === 'temp' ? device.tempGuide : null;
-  // 値が範囲を超えたら上限を広げる
-  let max = chart.key === 'temp' ? device.tempMax : chart.max;
-  for (const p of series) max = Math.max(max, p[chart.key]);
-  const min = Math.min(chart.min, ...series.map((p) => p[chart.key]));
-  const x = (t) => left + (1 - (now - t) / WINDOW_SEC) * pw;
-  const y = (v) => top + ph - (v - min) / (max - min) * ph;
+// uPlot のグラフ(chart.id ごとに 1 つ)。大きさは枠に合わせ、時間軸は毎秒「いま」に合わせて流す
+const plots = {};
 
-  ctx.font = '10px system-ui, sans-serif';
-  ctx.fillStyle = '#8a8a8a'; ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1;
-  for (let i = 0; i <= 2; i++) {
-    const v = min + (max - min) * i / 2, yy = Math.round(y(v)) + 0.5;
-    ctx.beginPath(); ctx.moveTo(left, yy); ctx.lineTo(left + pw, yy); ctx.stroke();
-    ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(String(Math.round(v)), left - 4, yy);
-  }
-  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-  for (const m of [10, 5, 0]) ctx.fillText(m ? `-${m}分` : '今', x(now - m * 60), top + ph + 2);
-  if (guide != null) {
-    ctx.setLineDash([3, 3]); ctx.strokeStyle = '#ef535099';
-    ctx.beginPath(); ctx.moveTo(left, y(guide)); ctx.lineTo(left + pw, y(guide)); ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  // タイトルと最新値(目安を超えていたら赤)
-  const last = series.at(-1)?.[chart.key];
-  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  ctx.fillStyle = '#ddd'; ctx.font = '600 11px system-ui, sans-serif';
-  ctx.fillText(chart.title, 4, 3);
-  const titleW = ctx.measureText(chart.title).width;
-  ctx.fillStyle = last != null && guide != null && last >= guide ? '#ef5350' : device.color;
-  ctx.fillText(last == null ? '–' : Number(last).toFixed(chart.digits), 4 + titleW + 8, 3);
-
-  ctx.save();
-  ctx.beginPath(); ctx.rect(left, top, pw, ph); ctx.clip();
-  ctx.strokeStyle = device.color; ctx.lineWidth = 1.5; ctx.beginPath();
+function chartData(key, now) {
+  // 6 秒以上途切れたら(切断など)線をつながないよう、間に null を入れる
+  const xs = [], ys = [];
   let prev = null;
-  for (const p of series) {
-    // 6 秒以上途切れたら(切断など)線をつながない
-    if (!prev || p.t - prev.t > 6) ctx.moveTo(x(p.t), y(p[chart.key]));
-    else ctx.lineTo(x(p.t), y(p[chart.key]));
+  for (const p of metrics[selectedDevice] ?? []) {
+    if (p[key] == null || now - p.t > WINDOW_SEC + 5) continue;
+    if (prev && p.t - prev.t > 6) { xs.push(prev.t + 3); ys.push(null); }
+    xs.push(p.t); ys.push(p[key]);
     prev = p;
   }
-  ctx.stroke();
-  ctx.restore();
+  return [xs, ys];
+}
+
+function makePlot(chart, box) {
+  const device = () => DEVICES[selectedDevice];
+  const guideLine = (u) => {
+    const guide = chart.key === 'temp' ? device().tempGuide : null;
+    if (guide == null) return;
+    const y = u.valToPos(guide, 'y', true), { ctx } = u;
+    ctx.save(); ctx.setLineDash([3, 3]); ctx.strokeStyle = '#ef535099'; ctx.lineWidth = devicePixelRatio;
+    ctx.beginPath(); ctx.moveTo(u.bbox.left, y); ctx.lineTo(u.bbox.left + u.bbox.width, y); ctx.stroke(); ctx.restore();
+  };
+  const axis = { stroke: '#8a8a8a', grid: { stroke: '#2a2a2a', width: 1 }, ticks: { show: false }, font: '10px system-ui' };
+  return new uPlot({
+    width: box.clientWidth || 300, height: box.clientHeight || 80,
+    legend: { show: false }, cursor: { show: false },
+    scales: {
+      x: { time: true },
+      // 値が範囲を超えたら広げる
+      y: { range: (u, lo, hi) => [Math.min(chart.min, lo ?? chart.min),
+                                   Math.max(chart.key === 'temp' ? device().tempMax : chart.max, hi ?? 0)] },
+    },
+    axes: [{ ...axis, size: 18, values: (u, ticks) => ticks.map((t) => fmtTime(t).slice(0, 5)) },
+           { ...axis, size: 28 }],
+    series: [{}, { stroke: () => device().color, width: 1.5, points: { show: false }, spanGaps: false }],
+    hooks: { draw: [guideLine] },
+  }, chartData(chart.key, Date.now() / 1000), box);
+}
+
+function drawChart(chart, now) {
+  const box = $(chart.id)?.querySelector('.chart-plot');
+  if (!box || !box.clientWidth) return;
+  const plot = plots[chart.id] ??= makePlot(chart, box);
+  if (plot.width !== box.clientWidth || plot.height !== box.clientHeight) {
+    plot.setSize({ width: box.clientWidth, height: box.clientHeight });
+  }
+  plot.setData(chartData(chart.key, now));
+  plot.setScale('x', { min: now - WINDOW_SEC, max: now });
+  // タイトルと最新値(目安を超えていたら赤)
+  const device = DEVICES[selectedDevice];
+  const last = plot.data[1].findLast((v) => v != null);
+  const guide = chart.key === 'temp' ? device.tempGuide : null;
+  const title = $(chart.id).querySelector('.chart-title');
+  title.textContent = chart.title;
+  const value = document.createElement('b');
+  value.style.color = last != null && guide != null && last >= guide ? '#ef5350' : device.color;
+  value.textContent = last == null ? '–' : Number(last).toFixed(chart.digits);
+  title.append(value);
 }
 
 function drawCharts() {
@@ -1007,20 +1011,28 @@ const SOURCE_LABEL = { bluesky: 'Bluesky', trends_rss: 'ニュース・トレン
 const SOURCE_COLOR = { bluesky: '#0085ff', trends_rss: '#ff6600', test: '#90a4ae' };
 let notifiedUntil = Date.now() / 1000;  // 開く前の通知はトーストにしない
 
-function dismiss(toast) {
-  toast.classList.add('leaving');
-  setTimeout(() => toast.remove(), 300);
-}
+// Notyf は文言を HTML として扱うので、通知の本文は必ずエスケープする
+const escapeHtml = (text) => String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const notyf = new Notyf({
+  duration: TOAST_SEC * 1000, ripple: false, dismissible: false, position: { x: 'right', y: 'bottom' },
+  types: [{ type: 'notice', className: 'notice', icon: false, background: '#263238' }],
+});
+const openToasts = [];
 
 function showToast(x) {
-  const box = $('toasts');
-  const toast = el('div', 'toast');
-  toast.style.setProperty('--src', SOURCE_COLOR[x.source] ?? '#90a4ae');
-  toast.append(el('span', 'kv', `${SOURCE_LABEL[x.source] ?? x.source}・${fmtTime(x.at)}`), el('div', '', x.text));
-  toast.addEventListener('click', () => dismiss(toast));
-  box.append(toast);
-  while (box.children.length > MAX_TOASTS) box.firstElementChild.remove();
-  setTimeout(() => dismiss(toast), TOAST_SEC * 1000);
+  const toast = notyf.open({
+    type: 'notice',
+    message: `<small>${escapeHtml(SOURCE_LABEL[x.source] ?? x.source)}・${escapeHtml(fmtTime(x.at))}</small>${escapeHtml(x.text)}`,
+  });
+  openToasts.push(toast);
+  toast.on('click', () => notyf.dismiss(toast));
+  toast.on('dismiss', () => { const i = openToasts.indexOf(toast); if (i >= 0) openToasts.splice(i, 1); });
+  // 通知元ごとの色(Notyf が作った要素に付ける)
+  requestAnimationFrame(() => {
+    const els = document.querySelectorAll('.notyf__toast');
+    els[els.length - 1]?.style.setProperty('--src', SOURCE_COLOR[x.source] ?? '#90a4ae');
+  });
+  while (openToasts.length > MAX_TOASTS) notyf.dismiss(openToasts[0]);
 }
 
 async function pollNotifications() {
@@ -1343,11 +1355,8 @@ window.initGizmo3d = (THREE) => {
 
 // 地点から方位・距離だけ進んだ地点(扇形の弧を描くため)
 function destination(lat, lon, bearingDeg, distM) {
-  const R = 6371000, d = distM / R, b = rad(bearingDeg);
-  const p1 = rad(lat), l1 = rad(lon);
-  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
-  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
-  return [deg(p2), deg(l2)];
+  const [lon2, lat2] = turf.destination([lon, lat], distM / 1000, bearingDeg).geometry.coordinates;
+  return [lat2, lon2];
 }
 
 function drawMap() {
@@ -1429,38 +1438,32 @@ function drawContours(tile, bitmap, interval) {
   const wctx = work.getContext('2d');
   wctx.drawImage(bitmap, 0, 0);
   const px = wctx.getImageData(0, 0, 256, 256).data;
-  const h = new Float32Array(256 * 256);
+  // 標高(m)。値のない所(海など)は 0 とする
+  const h = new Float64Array(256 * 256);
+  let lo = Infinity, hi = -Infinity;
   for (let i = 0; i < h.length; i++) {
     const v = px[i * 4] * 65536 + px[i * 4 + 1] * 256 + px[i * 4 + 2];
-    h[i] = v === 8388608 ? NaN : (v < 8388608 ? v : v - 16777216) * 0.01;
+    h[i] = v === 8388608 ? 0 : (v < 8388608 ? v : v - 16777216) * 0.01;
+    lo = Math.min(lo, h[i]); hi = Math.max(hi, h[i]);
   }
-  const ctx = tile.getContext('2d'), step = 2;
-  const at = (x, y) => h[Math.min(255, y) * 256 + Math.min(255, x)];
-  const paths = { minor: new Path2D(), major: new Path2D() };
-  // マーチングスクエア: 2 画素ごとの格子で、各等高線が格子の辺を横切る点を結ぶ
-  for (let y = 0; y < 255; y += step) {
-    for (let x = 0; x < 255; x += step) {
-      const a = at(x, y), b = at(x + step, y), c = at(x + step, y + step), d = at(x, y + step);
-      if (Number.isNaN(a + b + c + d)) continue;
-      const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d);
-      for (let level = Math.ceil(lo / interval) * interval; level < hi; level += interval) {
-        const pts = [];
-        const edge = (v1, v2, x1, y1, x2, y2) => {
-          if ((v1 < level) === (v2 < level)) return;
-          const t = (level - v1) / (v2 - v1);
-          pts.push([x1 + (x2 - x1) * t, y1 + (y2 - y1) * t]);
-        };
-        edge(a, b, x, y, x + step, y); edge(b, c, x + step, y, x + step, y + step);
-        edge(d, c, x, y + step, x + step, y + step); edge(a, d, x, y, x, y + step);
-        const path = Math.round(level / interval) % 5 === 0 ? paths.major : paths.minor;
-        for (let i = 0; i + 1 < pts.length; i += 2) {
-          path.moveTo(pts[i][0], pts[i][1]); path.lineTo(pts[i + 1][0], pts[i + 1][1]);
+  const levels = d3.range(Math.ceil(lo / interval) * interval, hi, interval).filter((v) => v > 0);
+  const ctx = tile.getContext('2d');
+  // d3-contour の多角形はタイルの縁で閉じるので、縁に沿った辺は描かない(隣のタイルとの境に線が出ないように)
+  const onEdge = (p) => p[0] <= 0 || p[0] >= 256 || p[1] <= 0 || p[1] >= 256;
+  for (const contour of d3.contours().size([256, 256]).thresholds(levels)(h)) {
+    const path = new Path2D();
+    for (const polygon of contour.coordinates) {
+      for (const ring of polygon) {
+        for (let i = 1; i < ring.length; i++) {
+          if (onEdge(ring[i - 1]) && onEdge(ring[i])) continue;
+          path.moveTo(ring[i - 1][0], ring[i - 1][1]); path.lineTo(ring[i][0], ring[i][1]);
         }
       }
     }
+    const major = Math.round(contour.value / interval) % 5 === 0;
+    ctx.strokeStyle = '#8d5a3c'; ctx.globalAlpha = major ? 0.85 : 0.55; ctx.lineWidth = major ? 1.6 : 0.8;
+    ctx.stroke(path);
   }
-  ctx.strokeStyle = '#8d5a3c'; ctx.globalAlpha = 0.55; ctx.lineWidth = 0.8; ctx.stroke(paths.minor);
-  ctx.globalAlpha = 0.85; ctx.lineWidth = 1.6; ctx.stroke(paths.major);
 }
 
 // 気温の色(10°C 未満は青系、30°C 以上は赤系)
@@ -1587,23 +1590,22 @@ function initMap() {
 }
 
 // 距離の範囲のバー(2 つのつまみ)
+const rangeSlider = noUiSlider.create($('rangeBox'), {
+  start: [0, 20], connect: true, step: 0.5, margin: 0.5, range: { min: 0, max: 50 },
+  handleAttributes: [{ 'aria-label': 'ラベルを出す距離の開始(km)' }, { 'aria-label': 'ラベルを出す距離の終了(km)' }],
+});
+let syncingRange = false;
 function syncRange() {
-  const lo = $('rangeMin'), hi = $('rangeMax'), max = Number(hi.max);
-  $('rangeFill').style.left = `${view.min_distance_km / max * 100}%`;
-  $('rangeFill').style.right = `${100 - view.max_distance_km / max * 100}%`;
-  lo.value = view.min_distance_km; hi.value = view.max_distance_km;
+  syncingRange = true;
+  rangeSlider.set([view.min_distance_km, view.max_distance_km], false);
+  syncingRange = false;
   $('rangeText').textContent = `${view.min_distance_km}〜${view.max_distance_km} km`;
 }
-for (const id of ['rangeMin', 'rangeMax']) {
-  $(id).addEventListener('input', () => {
-    if (!view) return;
-    let lo = Number($('rangeMin').value), hi = Number($('rangeMax').value);
-    // つまみが交差しないようにする(最小 0.5km の幅)
-    if (lo > hi - 0.5) { if (id === 'rangeMin') lo = hi - 0.5; else hi = lo + 0.5; }
-    view.min_distance_km = Math.max(0, lo); view.max_distance_km = Math.min(Number($('rangeMax').max), hi);
-    changed();
-  });
-}
+rangeSlider.on('slide', (values) => {
+  if (!view || syncingRange) return;
+  view.min_distance_km = Number(values[0]); view.max_distance_km = Number(values[1]);
+  changed();
+});
 
 let saveTimer = null;
 function changed() {
@@ -1658,7 +1660,7 @@ async function refreshAr() {
   try {
     ar = await (await fetch('/api/ar', { cache: 'no-store' })).json();
     if (ar.camera) {
-      $('rangeMin').max = $('rangeMax').max = ar.camera.fetch_radius_km;
+      rangeSlider.updateOptions({ range: { min: 0, max: ar.camera.fetch_radius_km } }, false);
       // 操作中でなければ、保存されている向きに合わせる
       if (!view || !saveTimer) view = Object.fromEntries(['heading', 'pitch', 'roll', 'min_distance_km', 'max_distance_km'].map((k) => [k, ar.camera[k]]));
       syncRange();
