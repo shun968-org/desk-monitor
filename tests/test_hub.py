@@ -228,3 +228,35 @@ def test_stabilizer_requires_consecutive_detections():
     assert stab.update([Detection(12, 12, 52, 52, 0.7, 16)]) == []  # 種類が変わったら出さない
     assert stab.update([Detection(200, 200, 240, 240, 0.7, 16)]) == []  # 位置が離れていたら出さない
     assert hub.DetectionStabilizer(confirm=1).update([cat]) == [cat]   # 1 ならそのまま
+
+
+def test_dashboard_ar_api(dashboard, tmp_path):
+    state, link, addr = dashboard
+    status, body = _request(addr, 'GET', '/api/ar')
+    assert json.loads(body) == {'camera': None, 'pois': []}  # 設定がなければ空
+    hdr = {'X-Desk-Monitor': '1'}
+    assert _request(addr, 'POST', '/api/ar/view', {'heading': 10}, hdr)[0] == 400  # AR なし
+
+
+@pytest.fixture
+def ar_dashboard(tmp_path):
+    from desk_monitor import ar
+    state = hub.HubState(hub.History(':memory:'))
+    store = ar.PoiStore(ar.CameraConfig(lat=35.0, lon=139.0), tmp_path / 'pois.json',
+                        fetch=lambda q: {}, view_path=tmp_path / 'view.json')
+    srv = hub.DashboardServer(('127.0.0.1', 0), state, hub.DisplayLink(('127.0.0.1', 1), 't', state), store)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield store, srv.server_address
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_dashboard_ar_view_update(ar_dashboard):
+    store, addr = ar_dashboard
+    hdr = {'X-Desk-Monitor': '1'}
+    status, body = _request(addr, 'POST', '/api/ar/view', {'heading': 90, 'max_distance_km': 30}, hdr)
+    assert status == 200 and json.loads(body)['camera']['heading'] == 90
+    assert store.config.max_distance_km == 30
+    assert _request(addr, 'POST', '/api/ar/view', {'pitch': 200}, hdr)[0] == 400
+    assert _request(addr, 'POST', '/api/ar/view', {'heading': 0})[0] == 403  # 独自ヘッダがない
+    assert _request(addr, 'POST', '/api/ar/view', [1, 2], hdr)[0] == 400

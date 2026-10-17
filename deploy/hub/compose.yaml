@@ -18,10 +18,13 @@ services:
       # 実行ユーザーのホームがコンテナにないため、ライブラリの書き込み先を /tmp にする
       HOME: /tmp
       TZ: Asia/Tokyo
+      # 設置場所とカメラの向き(AR)。個人の住所に当たるのでリポジトリには置かない
+      DESK_MONITOR_AR_CONFIG: /config/ar.json
     user: "${HUB_UID:-1000}:${HUB_GID:-1000}"
     volumes:
       - ../../src:/app/src:ro
       - ../../assets:/app/assets:ro
       - ../../models:/app/models:ro
       - ${HOME}/.local/share/desk-monitor:/data
+      - ${HOME}/.config/desk-monitor:/config:ro
     restart: unless-stopped
