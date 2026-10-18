@@ -59,7 +59,7 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
   背面カメラの映像に、向けた方角の観光地の名前と距離を重ねる。向きは DeviceOrientation(iOS は相対の alpha を
   `webkitCompassHeading` で真北に合わせ、偏角は `geo.js` の日本向けの概算)、位置は Geolocation、観光地は `ar.py` と同じ条件で
   端末から Overpass API に問い合わせて localStorage に保存する(混んでいると 1 分ほどかかる)。方位のずれは映像の横ドラッグで補正する。
-  ラベルは景色に重ねないよう画面上部に近い順に並べ(`layout.js`)、線は映像から求めた空と景色の境界(`sky.js`)まで引く。
+  ラベルは景色に重ねないよう画面上部に近い順に並べ(`layout.js`)、線は映像から求めた空と景色の境界(`sky.js`。上端の帯の色をその場の空の色とし、列ごとに上から追う)まで引く。
   カメラとセンサーは HTTPS でしか使えないため、`main` の `pwa/` を GitHub Pages に配置する(`.github/workflows/pages.yml`)
 - 素材は `assets/`(`faces/` の表情画像、`fonts/` の IPAex ゴシックとライセンス)
 - ダッシュボードの部品は、商用利用できるライセンスの定番ライブラリを CDN から読む(Leaflet・leaflet.control.layers.tree・

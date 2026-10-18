@@ -7,11 +7,11 @@ import {
 } from './geo.js';
 import { emphasis, layoutLabels } from './layout.js';
 import { fetchPois, isStale, loadCache } from './poi.js';
-import { skyline } from './sky.js';
+import { blend, skyline } from './sky.js';
 
 const $ = (id) => document.getElementById(id);
 // 読み込まれている版(キャッシュで古いものが使われていないかを開始の画面で確かめる)。sw.js の VERSION と合わせる
-const APP_VERSION = 'v4';
+const APP_VERSION = 'v5';
 $('version').textContent = APP_VERSION;
 const video = $('video'), canvas = $('overlay');
 
@@ -211,7 +211,7 @@ function updateSky() {
   const c = skyCanvas.getContext('2d', { willReadFrequently: true });
   try {
     c.drawImage(video, 0, 0, sw, sh);
-    sky = skyline(c.getImageData(0, 0, sw, sh).data, sw, sh);
+    sky = blend(sky, skyline(c.getImageData(0, 0, sw, sh).data, sw, sh));
   } catch {
     sky = null;  // 映像がまだ描けないとき
   }
