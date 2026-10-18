@@ -1,0 +1,60 @@
+:root {
+  color-scheme: dark;
+  --bg: #111; --panel: #14161ae6; --line: #ffffff22; --text: #eee; --muted: #9a9a9a;
+  --accent: #ffa726; --warn: #ffb300;
+  --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+             font: 14px/1.5 system-ui, -apple-system, "Hiragino Sans", sans-serif; overscroll-behavior: none; }
+button, select, a { font: inherit; color: var(--text); }
+button, select { background: #2a2d33; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; }
+button[aria-pressed="true"], button[aria-expanded="true"] { background: #4a3a1c; border-color: var(--accent); }
+a { color: #90caf9; }
+.muted { color: var(--muted); }
+.warn { color: var(--warn); }
+.num { min-width: 72px; text-align: right; font-variant-numeric: tabular-nums; }
+
+#video, #overlay { position: fixed; inset: 0; width: 100%; height: 100%; }
+#video { object-fit: cover; background: #000; }
+#overlay { touch-action: none; }
+.osm-attr { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-bottom) + 2px);
+            font-size: 10px; color: #ffffffaa; pointer-events: none; white-space: nowrap; }
+
+.hud { position: fixed; top: calc(var(--safe-top) + 8px); left: 8px; right: 8px; padding: 6px 12px;
+       background: var(--panel); border: 1px solid var(--line); border-radius: 12px; pointer-events: none;
+       font-variant-numeric: tabular-nums; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+#hudMain { font-weight: 600; }
+#hudSub { font-size: 12px; color: #ccc; }
+#hudWarn { font-size: 12px; }
+
+.toolbar { position: fixed; right: 12px; bottom: calc(var(--safe-bottom) + 12px); display: flex; gap: 8px; z-index: 3; }
+.toolbar button { background: var(--panel); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); padding: 10px 14px; }
+
+.map-box { position: fixed; left: 12px; bottom: calc(var(--safe-bottom) + 12px); width: min(46vw, 260px);
+           height: min(46vw, 260px); border-radius: 12px; overflow: hidden; border: 1px solid var(--line); z-index: 2; }
+#map { width: 100%; height: 100%; background: #222; }
+.map-box .leaflet-control-attribution { font-size: 9px; }
+
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4; padding: 12px 16px calc(var(--safe-bottom) + 16px);
+         background: var(--panel); border-top: 1px solid var(--line); border-radius: 16px 16px 0 0;
+         backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); max-height: 70vh; overflow: auto; }
+.sheet h2 { margin: 4px 0; font-size: 18px; }
+.row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+.row > span:first-child { min-width: 72px; }
+.row input[type="range"] { flex: 1; accent-color: var(--accent); }
+.hint, .attribution { font-size: 12px; color: var(--muted); }
+
+/* 距離の範囲(noUiSlider)を暗い画面に合わせる */
+.range { flex: 1; margin: 0 10px; }
+.range.noUi-target { height: 4px; background: #444; border: 0; box-shadow: none; }
+.range .noUi-connect { background: var(--accent); }
+.range .noUi-handle { width: 22px !important; height: 22px !important; right: -11px !important; top: -9px !important;
+                      border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-shadow: none; }
+.range .noUi-handle::before, .range .noUi-handle::after { display: none; }
+
+.start { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; justify-content: center;
+         padding: 24px; background: var(--bg); text-align: center; }
+.start h1 { margin: 0 0 8px; }
+.start button { margin: 16px auto 0; padding: 12px 32px; font-size: 16px; background: var(--accent); color: #111;
+                border: 0; font-weight: 600; }

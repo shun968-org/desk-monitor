@@ -62,3 +62,13 @@ flowchart LR
 | pi_a | display | `desk-monitor-display` / `desk-monitor-trend`(systemd ユーザーサービス) | `scripts/deploy.sh pi_a` |
 | pi_b | camera | `desk-monitor-camera`(systemd ユーザーサービス) | `scripts/deploy.sh pi_b` |
 | 開発 PC | hub | `hub`(`deploy/hub/compose.yaml`) | `scripts/deploy-hub.sh` |
+
+## 持ち歩き用の観光 AR(試作)
+
+`pwa/` は、固定設置の簡易 AR(`ar.py`)を iPhone などで持ち歩いて使えるようにした試作の PWA。
+背面カメラの映像に、向けた方角にある観光地の名前と距離を重ねる。ハブや Pi は使わず、端末だけで動く。
+
+- 公開先: `main` の `pwa/` を GitHub Pages に配置する(カメラとセンサーは HTTPS でしか使えない)
+- 使い方: Safari で開いて「開始」を押し、カメラ・位置情報・動きと方向へのアクセスを許可する。共有メニューの「ホーム画面に追加」でアプリのように起動でき、一度開いたあとは保存済みの観光地で圏外でも動く
+- 方位がずれていたら、映像を横にドラッグして遠くの山や建物にラベルを合わせる(補正は端末に保存される)
+- テスト: `npm run test:pwa`
