@@ -1,6 +1,6 @@
 // オフラインでも開けるよう、アプリの本体と CDN のライブラリを端末に保存する。
 // 地図のタイルは開いた範囲だけ保存する(件数に上限)。観光地のデータは app.js が localStorage に保存する
-const VERSION = 'v1';
+const VERSION = 'v2';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles';
 const TILE_LIMIT = 500;
@@ -15,7 +15,9 @@ const APP_FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(APP_CACHE).then((c) => c.addAll(APP_FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(APP_CACHE)
+    .then((c) => c.addAll(APP_FILES.map((u) => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -46,8 +48,9 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   if (url.origin === self.location.origin) {
-    // アプリの本体: 通信を優先して更新をすぐ反映し、圏外なら保存したものを出す
-    e.respondWith(fetch(req).then((res) => {
+    // アプリの本体: 通信を優先して更新をすぐ反映し、圏外なら保存したものを出す。
+    // GitHub Pages は 10 分キャッシュさせるので、ブラウザのキャッシュを使わずサーバーに確かめる
+    e.respondWith(fetch(req, { cache: 'no-cache' }).then((res) => {
       if (res.ok) {
         const copy = res.clone();
         caches.open(APP_CACHE).then((c) => c.put(req, copy));
