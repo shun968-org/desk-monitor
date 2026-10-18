@@ -9,7 +9,7 @@ import { fetchPois, isStale, loadCache } from './poi.js';
 
 const $ = (id) => document.getElementById(id);
 // 読み込まれている版(キャッシュで古いものが使われていないかを開始の画面で確かめる)。sw.js の VERSION と合わせる
-const APP_VERSION = 'v2';
+const APP_VERSION = 'v3';
 $('version').textContent = APP_VERSION;
 const video = $('video'), canvas = $('overlay');
 
@@ -38,6 +38,7 @@ let fetching = false, fetchError = null, lastFetchAttempt = 0;
 let labelBoxes = [];          // タップの当たり判定
 let startedAt = null;
 let permissionError = null;
+let geoError = null;
 
 const screenAngle = () => screen.orientation?.angle ?? window.orientation ?? 0;
 const here = () => position ?? { lat: 35.7, lon: 139.7 };  // 位置が取れるまでの偏角の計算用
@@ -191,7 +192,8 @@ function renderHud() {
   if (!orient && startedAt != null && performance.now() - startedAt > 3000) warn.push('向きのセンサーの値が届きません(設定 > Safari > モーションと画面の向きのアクセス)');
   else if (orient && northOffset == null) warn.push('方位を待っています(端末を少し動かしてください)');
   if (compassAccuracy != null && compassAccuracy > 25) warn.push(`コンパスの精度が低い(±${Math.round(compassAccuracy)}°)。端末を 8 の字に動かしてください`);
-  if (!position && startedAt != null) warn.push('位置を待っています');
+  if (geoError) warn.push(geoError);
+  else if (!position && startedAt != null) warn.push('位置を待っています');
   if (permissionError) warn.push(permissionError);
   if (fetchError) warn.push(`観光地を取得できません: ${fetchError}`);
   if (screenAngle() !== 0) warn.push('縦持ちで使ってください(横持ちでは方位を合わせ直しません)');
@@ -356,6 +358,21 @@ async function startCamera() {
 }
 
 let listening = false;
+let geoWatch = null;
+
+// 位置を追う。拒否・失敗したら止めて理由を出し、次に画面へ戻ったとき(設定を変えて戻ったときなど)に求め直す
+function watchGeo() {
+  if (geoWatch != null) return;
+  geoError = null;
+  geoWatch = navigator.geolocation.watchPosition((p) => { geoError = null; onPosition(p); }, (err) => {
+    if (err.code === err.TIMEOUT && position) return;  // 一時的に取れないだけなら、前の位置で続ける
+    navigator.geolocation.clearWatch(geoWatch);
+    geoWatch = null;
+    geoError = err.code === err.PERMISSION_DENIED
+      ? '位置情報が許可されていません(設定 > プライバシーとセキュリティ > 位置情報サービス > Safari Web サイト、と Web サイトの設定)'
+      : `位置を取得できません: ${err.message}`;
+  }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+}
 let wakeLock = null;
 async function keepAwake() {
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* 対応していなければ何もしない */ }
@@ -379,12 +396,13 @@ async function start() {
       if (p !== 'granted') permissionError = '動きと方向へのアクセスが許可されていません';
     });
   }
+  // 位置もカメラより先に(ボタンを押した直後に)求める
+  if (navigator.geolocation) watchGeo(); else errors.push('位置情報を使えません');
   try {
     await startCamera();
   } catch (err) {
     errors.push(`カメラを使えません: ${err.message || err.name}`);
   }
-  if (!navigator.geolocation) errors.push('位置情報を使えません');
   if (!listening) {
     // カメラが使えずに「開始」を押し直したとき、二重に登録しない
     listening = true;
@@ -393,8 +411,6 @@ async function start() {
     } else {
       window.addEventListener('deviceorientation', (e) => onOrientation(e, false));
     }
-    navigator.geolocation?.watchPosition(onPosition, (err) => { fetchError = `位置を取得できません: ${err.message}`; },
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
   }
   if (errors.length && !video.srcObject) {
     $('startError').hidden = false;
@@ -411,6 +427,7 @@ async function start() {
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || startedAt == null) return;
   keepAwake();
+  if (geoError && navigator.geolocation) watchGeo();
   // バックグラウンドから戻ると iOS はカメラを止めているので掛け直す
   const track = video.srcObject?.getVideoTracks()[0];
   if (!track || track.readyState === 'ended') startCamera().catch(() => {});
