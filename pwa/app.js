@@ -5,11 +5,13 @@ import {
   angleDiff, compassReference, coverTransform, declinationJapan, deviceBasis, fovOf, headingOf, norm360,
   pitchOf, projectDir, rotateBasis, trueHeading,
 } from './geo.js';
+import { emphasis, layoutLabels } from './layout.js';
 import { fetchPois, isStale, loadCache } from './poi.js';
+import { skyline } from './sky.js';
 
 const $ = (id) => document.getElementById(id);
 // 読み込まれている版(キャッシュで古いものが使われていないかを開始の画面で確かめる)。sw.js の VERSION と合わせる
-const APP_VERSION = 'v2';
+const APP_VERSION = 'v4';
 $('version').textContent = APP_VERSION;
 const video = $('video'), canvas = $('overlay');
 
@@ -38,6 +40,7 @@ let fetching = false, fetchError = null, lastFetchAttempt = 0;
 let labelBoxes = [];          // タップの当たり判定
 let startedAt = null;
 let permissionError = null;
+let geoError = null;
 
 const screenAngle = () => screen.orientation?.angle ?? window.orientation ?? 0;
 const here = () => position ?? { lat: 35.7, lon: 139.7 };  // 位置が取れるまでの偏角の計算用
@@ -114,15 +117,16 @@ function videoFov() {
   return fovOf(settings.longFov, video.videoWidth || 3, video.videoHeight || 4);
 }
 
-// 画面に出す観光地: 画面内かつ距離の範囲内で、近い順に maxLabels 件
-function visiblePois(basis, cover, fov, w, h) {
+// 画面に出す観光地: 方角が画面の横の範囲に入り、距離の範囲内のものを近い順に maxLabels 件
+// (ラベルは画面上部に出すので、上下に傾けて地平線が画面の外に出ても出す)
+function visiblePois(basis, cover, fov, w) {
   const out = [];
   for (const p of pois) {
     if (p.distance_m < settings.minKm * 1000 || p.distance_m > settings.maxKm * 1000) continue;
     const pos = projectDir(p.bearing, basis, fov);
     if (!pos) continue;
     const pt = cover.toPx(pos);
-    if (pt.x < 0 || pt.x > w || pt.y < 0 || pt.y > h) continue;
+    if (pt.x < 0 || pt.x > w) continue;
     out.push({ ...p, pt });
     if (out.length >= settings.maxLabels) break;
   }
@@ -143,46 +147,75 @@ function draw() {
   if (!basis || !video.videoWidth) return;
   const fov = videoFov(), cover = coverTransform(video.videoWidth, video.videoHeight, w, h);
 
-  // 地平線(仰角 0 の線。傾ければ傾く)
-  const hd = headingOf(basis.f);
-  const a = projectDir(hd - fov.hfov, basis, fov), b = projectDir(hd + fov.hfov, basis, fov);
-  if (a && b) {
-    const pa = cover.toPx(a), pb = cover.toPx(b);
-    ctx.strokeStyle = '#ffffff55'; ctx.setLineDash([6, 6]); ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke(); ctx.setLineDash([]);
-  }
-
-  const fontSize = Math.max(13, Math.round(Math.min(w, h) / 26));
-  ctx.font = `600 ${fontSize}px system-ui, -apple-system, sans-serif`;
-  ctx.textBaseline = 'middle';
-  // 左から順に、横に重ならない段へ並べる(重なるときは一段上に積む)。ダッシュボードと同じ
-  const rowH = fontSize + 12, rows = [];
-  const labels = visiblePois(basis, cover, fov, w, h).sort((p, q) => p.pt.x - q.pt.x).map((p) => {
+  // ラベルは画面上部(表示の下)に段を作って並べ、線は空と景色の境界まで引く(景色に重ねない)
+  const baseFont = Math.max(13, Math.round(Math.min(w, h) / 26));
+  const rowH = Math.round(baseFont * 1.15) + 12;
+  const top = hudBottom + 8;
+  const maxRows = Math.max(3, Math.min(6, Math.floor((h * 0.45 - top) / rowH)));
+  const minM = settings.minKm * 1000, maxM = settings.maxKm * 1000;
+  const items = visiblePois(basis, cover, fov, w).map((p) => {
+    const e = emphasis(p.distance_m, minM, maxM);
+    const font = `600 ${Math.round(baseFont * e.scale)}px system-ui, -apple-system, sans-serif`;
+    ctx.font = font;
     const text = `${p.name} ${fmtKm(p.distance_m)}`;
-    const lw = ctx.measureText(text).width + 14;
-    let row = 0;
-    while (rows[row] !== undefined && rows[row] > p.pt.x - lw / 2 - 4) row++;
-    rows[row] = p.pt.x + lw / 2;
-    return { p, text, lw, row };
+    return { ...p, x: p.pt.x, w: ctx.measureText(text).width + 14, text, font, alpha: e.alpha };
   });
-  for (const { p, text, lw, row } of labels) {
-    const { x, y } = p.pt;
-    const cy = y - 28 - row * rowH;
+  const labels = layoutLabels(items, { width: w, maxRows });
+  const skyY = (x) => {
+    if (!sky) return null;
+    const vx = cover.fromPx({ x, y: 0 }).x;
+    const i = Math.min(sky.length - 1, Math.max(0, Math.round(vx * (sky.length - 1))));
+    return sky[i] > 0 ? cover.toPx({ x: 0, y: sky[i] }).y : null;
+  };
+  // 線(遠い順に描くので、近いものが上に重なる)
+  for (const l of labels) {
+    const boxBottom = top + l.row * rowH + rowH - 4;
+    const horizon = l.pt.y;
+    const s = skyY(l.x);
+    // 空の境界まで。境界が分からない(空が映っていない)ときは短い線だけにする
+    const end = Math.max(boxBottom + 10, Math.min(s ?? boxBottom + 18, horizon));
+    ctx.globalAlpha = l.alpha;
     ctx.strokeStyle = '#ffcc80'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(x, cy + rowH / 2 - 4); ctx.lineTo(x, y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(l.x, boxBottom); ctx.lineTo(l.x, end); ctx.stroke();
     ctx.fillStyle = '#ffcc80';
-    ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
-    const lx = Math.min(Math.max(x - lw / 2, 4), w - lw - 4);
-    const box = { x: lx, y: cy - rowH / 2 + 2, w: lw, h: rowH - 4, poi: p };
-    ctx.fillStyle = '#000000b8';
+    ctx.beginPath(); ctx.arc(l.x, end, 3, 0, Math.PI * 2); ctx.fill();
+  }
+  // ラベル
+  ctx.textBaseline = 'middle';
+  for (const l of labels) {
+    const box = { x: l.lx, y: top + l.row * rowH, w: l.w, h: rowH - 4, poi: l };
+    ctx.globalAlpha = l.alpha;
+    ctx.fillStyle = '#000000c8';
     ctx.fillRect(box.x, box.y, box.w, box.h);
+    ctx.font = l.font;
     ctx.fillStyle = '#fff';
-    ctx.fillText(text, lx + 7, cy);
+    ctx.fillText(l.text, box.x + 7, box.y + box.h / 2);
     labelBoxes.push(box);
   }
+  ctx.globalAlpha = 1;
+  // タップの当たり判定は前面(近いもの)から
+  labelBoxes.reverse();
   lastShown = labels.length;
 }
 let lastShown = 0;
+
+// ─── 空と景色の境界(4 回 / 秒、縮小した映像から求める) ───
+let sky = null;
+let hudBottom = 0;
+const skyCanvas = document.createElement('canvas');
+function updateSky() {
+  hudBottom = document.querySelector('.hud').getBoundingClientRect().bottom;
+  if (!video.videoWidth || startedAt == null) return;
+  const sw = 72, sh = Math.round(sw * video.videoHeight / video.videoWidth);
+  skyCanvas.width = sw; skyCanvas.height = sh;
+  const c = skyCanvas.getContext('2d', { willReadFrequently: true });
+  try {
+    c.drawImage(video, 0, 0, sw, sh);
+    sky = skyline(c.getImageData(0, 0, sw, sh).data, sw, sh);
+  } catch {
+    sky = null;  // 映像がまだ描けないとき
+  }
+}
 
 // ─── 表示の文字(4 回 / 秒) ───
 function renderHud() {
@@ -191,7 +224,8 @@ function renderHud() {
   if (!orient && startedAt != null && performance.now() - startedAt > 3000) warn.push('向きのセンサーの値が届きません(設定 > Safari > モーションと画面の向きのアクセス)');
   else if (orient && northOffset == null) warn.push('方位を待っています(端末を少し動かしてください)');
   if (compassAccuracy != null && compassAccuracy > 25) warn.push(`コンパスの精度が低い(±${Math.round(compassAccuracy)}°)。端末を 8 の字に動かしてください`);
-  if (!position && startedAt != null) warn.push('位置を待っています');
+  if (geoError) warn.push(geoError);
+  else if (!position && startedAt != null) warn.push('位置を待っています');
   if (permissionError) warn.push(permissionError);
   if (fetchError) warn.push(`観光地を取得できません: ${fetchError}`);
   if (screenAngle() !== 0) warn.push('縦持ちで使ってください(横持ちでは方位を合わせ直しません)');
@@ -204,7 +238,7 @@ function renderHud() {
   if (position) parts.push(`位置 ±${Math.round(position.accuracy)}m`);
   if (compassAccuracy != null) parts.push(`コンパス ±${Math.round(compassAccuracy)}°`);
   parts.push(`表示 ${lastShown} / 周辺 ${pois.length} 件`);
-  if (fetching) parts.push('観光地を取得中…');
+  if (fetching) parts.push(`観光地を取得中(${Math.round((Date.now() - lastFetchAttempt) / 1000)} 秒)`);
   $('hudSub').textContent = parts.join(' ・ ');
   $('hudWarn').hidden = !warn.length;
   $('hudWarn').textContent = warn.join(' / ');
@@ -356,6 +390,21 @@ async function startCamera() {
 }
 
 let listening = false;
+let geoWatch = null;
+
+// 位置を追う。拒否・失敗したら止めて理由を出し、次に画面へ戻ったとき(設定を変えて戻ったときなど)に求め直す
+function watchGeo() {
+  if (geoWatch != null) return;
+  geoError = null;
+  geoWatch = navigator.geolocation.watchPosition((p) => { geoError = null; onPosition(p); }, (err) => {
+    if (err.code === err.TIMEOUT && position) return;  // 一時的に取れないだけなら、前の位置で続ける
+    navigator.geolocation.clearWatch(geoWatch);
+    geoWatch = null;
+    geoError = err.code === err.PERMISSION_DENIED
+      ? '位置情報が許可されていません(設定 > プライバシーとセキュリティ > 位置情報サービス > Safari Web サイト、と Web サイトの設定)'
+      : `位置を取得できません: ${err.message}`;
+  }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+}
 let wakeLock = null;
 async function keepAwake() {
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* 対応していなければ何もしない */ }
@@ -379,12 +428,13 @@ async function start() {
       if (p !== 'granted') permissionError = '動きと方向へのアクセスが許可されていません';
     });
   }
+  // 位置もカメラより先に(ボタンを押した直後に)求める
+  if (navigator.geolocation) watchGeo(); else errors.push('位置情報を使えません');
   try {
     await startCamera();
   } catch (err) {
     errors.push(`カメラを使えません: ${err.message || err.name}`);
   }
-  if (!navigator.geolocation) errors.push('位置情報を使えません');
   if (!listening) {
     // カメラが使えずに「開始」を押し直したとき、二重に登録しない
     listening = true;
@@ -393,8 +443,6 @@ async function start() {
     } else {
       window.addEventListener('deviceorientation', (e) => onOrientation(e, false));
     }
-    navigator.geolocation?.watchPosition(onPosition, (err) => { fetchError = `位置を取得できません: ${err.message}`; },
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
   }
   if (errors.length && !video.srcObject) {
     $('startError').hidden = false;
@@ -411,12 +459,14 @@ async function start() {
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || startedAt == null) return;
   keepAwake();
+  if (geoError && navigator.geolocation) watchGeo();
   // バックグラウンドから戻ると iOS はカメラを止めているので掛け直す
   const track = video.srcObject?.getVideoTracks()[0];
   if (!track || track.readyState === 'ended') startCamera().catch(() => {});
 });
 
 setInterval(renderHud, 250);
+setInterval(updateSky, 250);
 setInterval(renderMap, 500);
 requestAnimationFrame(draw);
 

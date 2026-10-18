@@ -59,12 +59,22 @@ export function loadCache(storage = globalThis.localStorage) {
   }
 }
 
+// 公開の Overpass API は混んでいると 1 分ほどかかるので、2 分で打ち切る
+export const FETCH_TIMEOUT_MS = 120_000;
+
 export async function fetchPois(lat, lon, radiusKm, { fetch = globalThis.fetch, storage = globalThis.localStorage } = {}) {
-  const res = await fetch(OVERPASS_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'data=' + encodeURIComponent(overpassQuery(lat, lon, radiusKm)),
-  });
+  let res;
+  try {
+    res = await fetch(OVERPASS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'data=' + encodeURIComponent(overpassQuery(lat, lon, radiusKm)),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (err?.name === 'TimeoutError') throw new Error(`Overpass API が ${FETCH_TIMEOUT_MS / 1000} 秒応答しません`);
+    throw err;
+  }
   if (!res.ok) throw new Error(`Overpass API: HTTP ${res.status}`);
   const cache = { lat, lon, radius_km: radiusKm, updated_at: Date.now(), pois: parseOverpass(await res.json()) };
   try {

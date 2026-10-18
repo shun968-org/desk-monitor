@@ -90,6 +90,7 @@ export function coverTransform(videoW, videoH, boxW, boxH) {
   const x0 = (boxW - w) / 2, y0 = (boxH - h) / 2;
   return {
     toPx: (p) => ({ x: x0 + p.x * w, y: y0 + p.y * h }),
+    fromPx: (p) => ({ x: (p.x - x0) / w, y: (p.y - y0) / h }),
     // 表示枠に見えている範囲の横の割合(手での補正で、ドラッグ量を角度に直すため)
     visibleX: boxW / w,
   };
