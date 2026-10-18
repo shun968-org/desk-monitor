@@ -8,6 +8,9 @@ import {
 import { fetchPois, isStale, loadCache } from './poi.js';
 
 const $ = (id) => document.getElementById(id);
+// 読み込まれている版(キャッシュで古いものが使われていないかを開始の画面で確かめる)。sw.js の VERSION と合わせる
+const APP_VERSION = 'v2';
+$('version').textContent = APP_VERSION;
 const video = $('video'), canvas = $('overlay');
 
 // ─── 設定(端末ごとの使い勝手なので localStorage に保存する) ───
@@ -34,6 +37,7 @@ let pois = [];                // 現在地からの distance_m / bearing 付き�
 let fetching = false, fetchError = null, lastFetchAttempt = 0;
 let labelBoxes = [];          // タップの当たり判定
 let startedAt = null;
+let permissionError = null;
 
 const screenAngle = () => screen.orientation?.angle ?? window.orientation ?? 0;
 const here = () => position ?? { lat: 35.7, lon: 139.7 };  // 位置が取れるまでの偏角の計算用
@@ -188,6 +192,7 @@ function renderHud() {
   else if (orient && northOffset == null) warn.push('方位を待っています(端末を少し動かしてください)');
   if (compassAccuracy != null && compassAccuracy > 25) warn.push(`コンパスの精度が低い(±${Math.round(compassAccuracy)}°)。端末を 8 の字に動かしてください`);
   if (!position && startedAt != null) warn.push('位置を待っています');
+  if (permissionError) warn.push(permissionError);
   if (fetchError) warn.push(`観光地を取得できません: ${fetchError}`);
   if (screenAngle() !== 0) warn.push('縦持ちで使ってください(横持ちでは方位を合わせ直しません)');
 
@@ -346,7 +351,8 @@ async function startCamera() {
     video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false,
   });
   video.srcObject = stream;
-  await video.play();
+  // play() の Promise は環境によって解決しないことがあるので待たない(autoplay と muted で再生される)
+  video.play().catch(() => {});
 }
 
 let listening = false;
@@ -355,18 +361,29 @@ async function keepAwake() {
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* 対応していなければ何もしない */ }
 }
 
-$('startBtn').addEventListener('click', async () => {
+$('startBtn').addEventListener('click', () => {
+  start().catch((err) => {
+    // 想定外の失敗も、開始の画面に出して分かるようにする
+    $('startError').hidden = false;
+    $('startError').textContent = `開始できません: ${err?.message || err}`;
+  });
+});
+
+async function start() {
   const errors = [];
   if (!window.isSecureContext) errors.push('HTTPS で開いてください(カメラとセンサーは HTTPS でしか使えません)');
-  // requestPermission はクリックの処理の中で最初に呼ぶ(await の後だと拒否される)
-  const permission = typeof DeviceOrientationEvent?.requestPermission === 'function'
-    ? DeviceOrientationEvent.requestPermission().catch(() => 'denied') : Promise.resolve('granted');
+  // requestPermission はクリックの処理の中で最初に呼ぶ(await の後だと拒否される)。
+  // 結果は待たずに進め、拒否されたら画面上部に出す
+  if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission().catch(() => 'denied').then((p) => {
+      if (p !== 'granted') permissionError = '動きと方向へのアクセスが許可されていません';
+    });
+  }
   try {
     await startCamera();
   } catch (err) {
     errors.push(`カメラを使えません: ${err.message || err.name}`);
   }
-  if (await permission !== 'granted') errors.push('動きと方向へのアクセスが許可されていません');
   if (!navigator.geolocation) errors.push('位置情報を使えません');
   if (!listening) {
     // カメラが使えずに「開始」を押し直したとき、二重に登録しない
@@ -389,7 +406,7 @@ $('startBtn').addEventListener('click', async () => {
   if (errors.length) fetchError = errors.join(' / ');
   keepAwake();
   updatePois();
-});
+}
 
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || startedAt == null) return;
