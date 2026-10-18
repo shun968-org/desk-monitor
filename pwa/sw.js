@@ -1,6 +1,6 @@
 // オフラインでも開けるよう、アプリの本体と CDN のライブラリを端末に保存する。
 // 地図のタイルは開いた範囲だけ保存する(件数に上限)。観光地のデータは app.js が localStorage に保存する
-const VERSION = 'v4';
+const VERSION = 'v5';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles';
 const TILE_LIMIT = 500;
