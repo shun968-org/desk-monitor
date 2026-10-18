@@ -61,6 +61,9 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
   端末から Overpass API に問い合わせて localStorage に保存する(混んでいると 1 分ほどかかる)。方位のずれは映像の横ドラッグで補正する。
   ラベルは景色に重ねないよう画面上部に近い順に並べ(`layout.js`)、線は映像から求めた空と景色の境界(`sky.js`。上端の帯の色をその場の空の色とし、列ごとに上から追う)まで引く。
   カメラとセンサーは HTTPS でしか使えないため、`main` の `pwa/` を GitHub Pages に配置する(`.github/workflows/pages.yml`)
+  - 利用状況は端末内(localStorage)にだけ集計し(`metrics.js`)、外部には送らない。利用者が設定の「診断情報をコピー」で自分で共有する。
+    位置・映像・観光地の名前は記録しない。Overpass API に送る座標は約 1km 単位に丸める
+  - 利用規約(`terms.html`)とプライバシーポリシー(`privacy.html`)は、送る情報や記録する項目を変えたら合わせて更新する
 - 素材は `assets/`(`faces/` の表情画像、`fonts/` の IPAex ゴシックとライセンス)
 - ダッシュボードの部品は、商用利用できるライセンスの定番ライブラリを CDN から読む(Leaflet・leaflet.control.layers.tree・
   uPlot・noUiSlider・d3-contour・Notyf・Turf.js・three.js)。版は固定する。独自に実装する前に、置き換えられるライブラリがないかを先に検討する
@@ -81,7 +84,7 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
 - `tests/` に pytest の単体テストがある。Pi 専用パッケージ(spidev / gpiozero / picamera2)は `tests/conftest.py` などで偽モジュールに置き換え、ハードウェアなしで動かす
 - 実行: `pip install -r requirements-dev.txt && python -m pytest`(設定は `pyproject.toml`)。ホストの Python に依存を入れたくなければ
   `docker run --rm -v "$PWD:/src:ro" python:3.13-slim sh -c 'cp -r /src /w && cd /w && pip install -q -r requirements-dev.txt && python -m pytest'`
-- PWA の計算(`pwa/geo.js`・`layout.js`・`sky.js`)と観光地の取得(`pwa/poi.js`)は `node --test 'pwa/tests/*.test.js'`(`npm run test:pwa`)。依存パッケージはない
+- PWA の計算(`pwa/geo.js`・`layout.js`・`sky.js`)・観光地の取得(`pwa/poi.js`)・利用状況の記録(`pwa/metrics.js`)は `node --test 'pwa/tests/*.test.js'`(`npm run test:pwa`)。依存パッケージはない
 - CI(`.github/workflows/ci.yml`)でテストを実行し、カバレッジを SonarCloud に渡す
 - 実機でしか確かめられないこと(LCD の表示、カメラ、推論速度、温度)は、`scripts/deploy.sh` で pi_a に配置して確認する
 

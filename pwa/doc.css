@@ -1,0 +1,18 @@
+/* 利用規約・プライバシーポリシーのページ(読み物なので、アプリの画面とは別の落ち着いた組版にする) */
+:root { color-scheme: dark; --bg: #111; --text: #e6e6e6; --muted: #9a9a9a; --line: #ffffff22; --link: #90caf9; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 15px/1.8 system-ui, -apple-system, "Hiragino Sans", sans-serif; }
+main { max-width: 720px; margin: 0 auto;
+       padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(env(safe-area-inset-bottom, 0px) + 32px); }
+h1 { font-size: 22px; margin: 8px 0 4px; }
+h2 { font-size: 17px; margin: 28px 0 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+p, li { margin: 6px 0; }
+ul, ol { padding-left: 1.4em; }
+a { color: var(--link); }
+table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0; }
+th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.muted { color: var(--muted); font-size: 13px; }
+.back { display: inline-block; margin-bottom: 8px; }

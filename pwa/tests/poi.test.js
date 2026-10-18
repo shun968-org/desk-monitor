@@ -8,9 +8,9 @@ const memoryStorage = () => {
   return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, v) };
 };
 
-test('問い合わせは ar.py と同じ条件で、半径を m にする', () => {
-  const q = overpassQuery(35.1234567, 139.5, 30);
-  assert.match(q, /around:30000,35\.12346,139\.50000/);
+test('問い合わせは ar.py と同じ条件で、半径を m に、中心を約 1km 単位にする', () => {
+  const q = overpassQuery(35.1274567, 139.5, 30);
+  assert.match(q, /around:30000,35\.13,139\.50\)/);
   assert.match(q, /"tourism"~"\^\(attraction\|/);
   assert.match(q, /\["wikidata"\]/);
 });
