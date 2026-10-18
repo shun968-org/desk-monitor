@@ -5,6 +5,8 @@
   --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 * { box-sizing: border-box; }
+/* display を指定した要素(開始の画面など)でも hidden で隠れるようにする */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
              font: 14px/1.5 system-ui, -apple-system, "Hiragino Sans", sans-serif; overscroll-behavior: none; }
 button, select, a { font: inherit; color: var(--text); }
