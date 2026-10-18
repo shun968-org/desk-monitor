@@ -75,6 +75,19 @@
     <button id="refetch" type="button">観光地を取り直す</button>
     <span id="fetchText" class="muted"></span>
   </div>
+  <h3>利用状況の記録</h3>
+  <label class="row">
+    <input id="metricsEnabled" type="checkbox">
+    <span>この端末の中に記録する(外部には送りません)</span>
+  </label>
+  <p id="metricsText" class="muted"></p>
+  <div class="row">
+    <button id="metricsCopy" type="button">診断情報をコピー</button>
+    <button id="metricsReset" type="button">記録を消す</button>
+  </div>
+  <textarea id="metricsDump" class="dump" rows="8" readonly hidden aria-label="診断情報"></textarea>
+  <p class="hint">改善のため、コピーした診断情報を開発者に送ってもらえると助かります(位置・映像・観光地の名前は含みません)。</p>
+  <p class="attribution"><a href="terms.html" target="_blank" rel="noopener">利用規約</a> ・ <a href="privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a></p>
   <p class="attribution">観光地: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors (ODbL)<br>
     地図: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a></p>
 </section>
@@ -92,8 +105,10 @@
 <div id="start" class="start">
   <h1>観光 AR</h1>
   <p>カメラを向けた方角にある観光地の名前と距離を、映像に重ねて表示します。</p>
-  <p class="muted">カメラ・位置情報・動きと方向へのアクセスを許可してください。映像と位置は端末の外に送りません(観光地の取得で、おおよその位置を OpenStreetMap の Overpass API に問い合わせます)。</p>
+  <p class="muted">カメラ・位置情報・動きと方向へのアクセスを許可してください。映像は端末の外に送りません。観光地と地図の取得のため、約 1km 単位に丸めた位置と表示している地図の範囲を外部のサービスに送ります。利用状況はこの端末の中にだけ記録します(設定で止められます)。</p>
+  <p class="muted">歩きながら・運転しながら使わないでください。</p>
   <button id="startBtn" type="button">開始</button>
+  <p class="agree">「開始」を押すと、<a href="terms.html">利用規約</a>と<a href="privacy.html">プライバシーポリシー</a>に同意したものとします。</p>
   <p id="startError" class="warn" hidden></p>
   <p id="version" class="muted"></p>
 </div>

@@ -6,26 +6,38 @@ import {
   pitchOf, projectDir, rotateBasis, trueHeading,
 } from './geo.js';
 import { emphasis, layoutLabels } from './layout.js';
+import { browserOf, createMetrics } from './metrics.js';
 import { fetchPois, isStale, loadCache } from './poi.js';
 import { blend, skyline } from './sky.js';
 
 const $ = (id) => document.getElementById(id);
 // 読み込まれている版(キャッシュで古いものが使われていないかを開始の画面で確かめる)。sw.js の VERSION と合わせる
-const APP_VERSION = 'v5';
+const APP_VERSION = 'v6';
 $('version').textContent = APP_VERSION;
 const video = $('video'), canvas = $('overlay');
 
 // ─── 設定(端末ごとの使い勝手なので localStorage に保存する) ───
 const SETTINGS_KEY = 'desk-monitor-ar:settings';
 // longFov: 映像の長辺の画角(度)。iPhone の広角カメラ(35mm 換算 26mm)で約 67°
-const DEFAULTS = { longFov: 67, minKm: 0, maxKm: 20, radiusKm: 30, maxLabels: 12, userOffset: 0 };
+// metrics: 利用状況を端末内に記録するか(外部には送らない。metrics.js)
+const DEFAULTS = { longFov: 67, minKm: 0, maxKm: 20, radiusKm: 30, maxLabels: 12, userOffset: 0, metrics: true };
 const settings = { ...DEFAULTS, ...readJson(SETTINGS_KEY) };
+const metrics = createMetrics({ enabled: settings.metrics });
 
 function readJson(key) {
   try { return JSON.parse(localStorage.getItem(key)) ?? {}; } catch { return {}; }
 }
 function saveSettings() {
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* 保存できなくても動く */ }
+}
+
+// 何度も来る値(コンパスの精度など)は、key ごとに intervalMs に 1 回だけ記録する
+const lastSampled = {};
+function sampleEvery(key, intervalMs, fn) {
+  const t = Date.now();
+  if (t - (lastSampled[key] ?? 0) < intervalMs) return;
+  lastSampled[key] = t;
+  fn();
 }
 
 // ─── 状態 ───
@@ -57,6 +69,7 @@ function onOrientation(e, absolute) {
   } else if (typeof e.webkitCompassHeading === 'number' && e.webkitCompassAccuracy >= 0 && screenAngle() === 0) {
     // コンパスの値は揺れるので、ジャイロの相対値とのずれ(northOffset)だけをゆっくり追従させる
     compassAccuracy = e.webkitCompassAccuracy;
+    sampleEvery('compass', 5000, () => metrics.compass(compassAccuracy));
     const target = norm360(trueHeading(e.webkitCompassHeading, lat, lon)
       - headingOf(compassReference(e.alpha, e.beta, e.gamma)));
     northOffset = northOffset == null ? target : norm360(northOffset + 0.05 * angleDiff(target, northOffset));
@@ -94,10 +107,14 @@ async function maybeFetch(force = false) {
   renderFetchText();
   try {
     poiCache = await fetchPois(position.lat, position.lon, settings.radiusKm);
+    metrics.inc('fetch.ok');
+    metrics.sample('fetchSec', (Date.now() - lastFetchAttempt) / 1000);
+    metrics.sample('poisAround', poiCache.pois.length);
     fetchError = null;
     updatePois();
   } catch (err) {
     fetchError = err.message || String(err);
+    metrics.inc(`fetch.fail:${/HTTP \d+/.exec(fetchError)?.[0] ?? (/応答しません/.test(fetchError) ? 'timeout' : 'other')}`);
   } finally {
     fetching = false;
     renderFetchText();
@@ -196,6 +213,7 @@ function draw() {
   // タップの当たり判定は前面(近いもの)から
   labelBoxes.reverse();
   lastShown = labels.length;
+  sampleEvery('labels', 10000, () => metrics.sample('labelsShown', labels.length));
 }
 let lastShown = 0;
 
@@ -212,6 +230,7 @@ function updateSky() {
   try {
     c.drawImage(video, 0, 0, sw, sh);
     sky = blend(sky, skyline(c.getImageData(0, 0, sw, sh).data, sw, sh));
+    sampleEvery('sky', 5000, () => metrics.sky(sky.some((v) => v > 0)));
   } catch {
     sky = null;  // 映像がまだ描けないとき
   }
@@ -312,11 +331,14 @@ canvas.addEventListener('pointerup', (e) => {
     if (hit) showInfo(hit.poi); else closeSheets();
   } else if (drag) {
     saveSettings();
+    metrics.inc('offset.drag');
+    metrics.sample('offset', settings.userOffset);
   }
   drag = null;
 });
 
 function showInfo(p) {
+  metrics.inc('tap.label');
   closeSheets();
   $('infoName').textContent = p.name;
   $('infoMeta').textContent = `${p.kind} ・ ${fmtKm(p.distance_m)} ・ 方位 ${Math.round(p.bearing)}°`;
@@ -333,6 +355,47 @@ function closeSheets() {
   $('settingsBtn').setAttribute('aria-expanded', 'false');
 }
 $('infoClose').addEventListener('click', closeSheets);
+$('infoWiki').addEventListener('click', () => metrics.inc('open.wiki'));
+$('infoMap').addEventListener('click', () => metrics.inc('open.gsiMap'));
+
+// ─── 利用状況の記録(端末内だけ。共有は利用者がコピーして自分で送る) ───
+function renderMetricsText() {
+  const d = metrics.data;
+  $('metricsText').textContent = metrics.enabled
+    ? `${new Date(d.since).toLocaleDateString('ja-JP')} から ・ 開始 ${d.counts.start ?? 0} 回 ・ 約 ${Math.round(d.durationSec / 60)} 分`
+    : '記録していません';
+}
+$('metricsEnabled').checked = settings.metrics;
+$('metricsEnabled').addEventListener('change', (e) => {
+  settings.metrics = e.target.checked;
+  metrics.setEnabled(settings.metrics);
+  saveSettings();
+  renderMetricsText();
+});
+$('metricsCopy').addEventListener('click', async () => {
+  metrics.flush();
+  const text = JSON.stringify(metrics.summary(APP_VERSION), null, 2);
+  const ok = confirm('診断情報をクリップボードにコピーします。\n\n'
+    + '含むもの: 版・ブラウザの種類・開始や許可の回数・コンパスの精度の分布・方位の補正量・観光地の取得時間と件数・使った時間\n'
+    + '含まないもの: 位置・映像・観光地の名前\n\n'
+    + 'コピーした内容は、送る前に確認できます。');
+  if (!ok) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    $('metricsText').textContent = 'コピーしました。メールやメッセージに貼り付けて送ってください';
+  } catch {
+    // クリップボードが使えなければ、選んでコピーできるよう表示する
+    $('metricsDump').hidden = false;
+    $('metricsDump').value = text;
+    $('metricsDump').select();
+  }
+});
+$('metricsReset').addEventListener('click', () => {
+  if (!confirm('この端末の利用状況の記録を消します。よろしいですか?')) return;
+  metrics.reset();
+  $('metricsDump').hidden = true;
+  renderMetricsText();
+});
 
 // ─── 設定の画面 ───
 const rangeSlider = noUiSlider.create($('range'), {
@@ -368,12 +431,14 @@ $('settingsBtn').addEventListener('click', () => {
   closeSheets();
   $('settings').hidden = !open;
   $('settingsBtn').setAttribute('aria-expanded', String(open));
+  if (open) { metrics.inc('open.settings'); renderMetricsText(); }
   renderFetchText();
 });
 $('mapBtn').addEventListener('click', () => {
   const open = $('mapBox').hidden;
   $('mapBox').hidden = !open;
   $('mapBtn').setAttribute('aria-pressed', String(open));
+  if (open) metrics.inc('open.mapPanel');
   if (open && map) { map.invalidateSize(); map.follow = true; }
   renderMap();
 });
@@ -396,10 +461,15 @@ let geoWatch = null;
 function watchGeo() {
   if (geoWatch != null) return;
   geoError = null;
-  geoWatch = navigator.geolocation.watchPosition((p) => { geoError = null; onPosition(p); }, (err) => {
+  geoWatch = navigator.geolocation.watchPosition((p) => {
+    if (geoError !== null || !position) metrics.inc('perm.geo.granted');
+    geoError = null;
+    onPosition(p);
+  }, (err) => {
     if (err.code === err.TIMEOUT && position) return;  // 一時的に取れないだけなら、前の位置で続ける
     navigator.geolocation.clearWatch(geoWatch);
     geoWatch = null;
+    metrics.inc(err.code === err.PERMISSION_DENIED ? 'perm.geo.denied' : 'geo.error');
     geoError = err.code === err.PERMISSION_DENIED
       ? '位置情報が許可されていません(設定 > プライバシーとセキュリティ > 位置情報サービス > Safari Web サイト、と Web サイトの設定)'
       : `位置を取得できません: ${err.message}`;
@@ -420,11 +490,18 @@ $('startBtn').addEventListener('click', () => {
 
 async function start() {
   const errors = [];
+  metrics.inc('start');
+  metrics.env({
+    browser: browserOf(navigator.userAgent),
+    standalone: Boolean(navigator.standalone || matchMedia('(display-mode: standalone)').matches
+      || matchMedia('(display-mode: fullscreen)').matches),
+  });
   if (!window.isSecureContext) errors.push('HTTPS で開いてください(カメラとセンサーは HTTPS でしか使えません)');
   // requestPermission はクリックの処理の中で最初に呼ぶ(await の後だと拒否される)。
   // 結果は待たずに進め、拒否されたら画面上部に出す
   if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
     DeviceOrientationEvent.requestPermission().catch(() => 'denied').then((p) => {
+      metrics.inc(`perm.motion.${p === 'granted' ? 'granted' : 'denied'}`);
       if (p !== 'granted') permissionError = '動きと方向へのアクセスが許可されていません';
     });
   }
@@ -434,6 +511,7 @@ async function start() {
     await startCamera();
   } catch (err) {
     errors.push(`カメラを使えません: ${err.message || err.name}`);
+    metrics.inc('perm.camera.denied');
   }
   if (!listening) {
     // カメラが使えずに「開始」を押し直したとき、二重に登録しない
@@ -450,6 +528,7 @@ async function start() {
     return;
   }
   startedAt = performance.now();
+  metrics.inc('perm.camera.granted');
   $('start').hidden = true;
   if (errors.length) fetchError = errors.join(' / ');
   keepAwake();
@@ -457,7 +536,8 @@ async function start() {
 }
 
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState !== 'visible' || startedAt == null) return;
+  if (document.visibilityState !== 'visible') { metrics.flush(); return; }
+  if (startedAt == null) return;
   keepAwake();
   if (geoError && navigator.geolocation) watchGeo();
   // バックグラウンドから戻ると iOS はカメラを止めているので掛け直す
@@ -467,6 +547,11 @@ document.addEventListener('visibilitychange', async () => {
 
 setInterval(renderHud, 250);
 setInterval(updateSky, 250);
+// 使っている時間を数え、記録を保存する(5 秒ごと)
+setInterval(() => {
+  if (startedAt != null && document.visibilityState === 'visible') metrics.addDuration(5);
+  metrics.flush();
+}, 5000);
 setInterval(renderMap, 500);
 requestAnimationFrame(draw);
 

@@ -15,8 +15,9 @@ export const REFRESH_MS = 7 * 86400 * 1000;
 export const MOVE_RATIO = 0.3;
 const STORAGE_KEY = 'desk-monitor-ar:pois';
 
+// 外部に送る中心の座標は約 1km 単位(小数点以下 2 桁)に丸める。取得範囲は数十 km なので精度は要らない
 export function overpassQuery(lat, lon, radiusKm) {
-  const around = `(around:${Math.round(radiusKm * 1000)},${lat.toFixed(5)},${lon.toFixed(5)})`;
+  const around = `(around:${Math.round(radiusKm * 1000)},${lat.toFixed(2)},${lon.toFixed(2)})`;
   return `[out:json][timeout:60];(`
     + `nwr["tourism"~"^(${TOURISM})$"]["name"]["wikidata"]${around};`
     + `nwr["historic"~"^(${HISTORIC})$"]["name"]["wikidata"]${around};`
