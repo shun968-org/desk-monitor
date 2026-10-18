@@ -58,7 +58,8 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
 - `pwa/`(iPhone などの持ち歩く端末): `ar.py` の簡易 AR を持ち歩ける形にした試作の PWA(静的ファイルのみ、Python は使わない)。
   背面カメラの映像に、向けた方角の観光地の名前と距離を重ねる。向きは DeviceOrientation(iOS は相対の alpha を
   `webkitCompassHeading` で真北に合わせ、偏角は `geo.js` の日本向けの概算)、位置は Geolocation、観光地は `ar.py` と同じ条件で
-  端末から Overpass API に問い合わせて localStorage に保存する。方位のずれは映像の横ドラッグで補正する。
+  端末から Overpass API に問い合わせて localStorage に保存する(混んでいると 1 分ほどかかる)。方位のずれは映像の横ドラッグで補正する。
+  ラベルは景色に重ねないよう画面上部に近い順に並べ(`layout.js`)、線は映像から求めた空と景色の境界(`sky.js`)まで引く。
   カメラとセンサーは HTTPS でしか使えないため、`main` の `pwa/` を GitHub Pages に配置する(`.github/workflows/pages.yml`)
 - 素材は `assets/`(`faces/` の表情画像、`fonts/` の IPAex ゴシックとライセンス)
 - ダッシュボードの部品は、商用利用できるライセンスの定番ライブラリを CDN から読む(Leaflet・leaflet.control.layers.tree・
@@ -80,7 +81,7 @@ Raspberry Pi と開発 PC で動くデスクトップモニタ「desk-monitor」
 - `tests/` に pytest の単体テストがある。Pi 専用パッケージ(spidev / gpiozero / picamera2)は `tests/conftest.py` などで偽モジュールに置き換え、ハードウェアなしで動かす
 - 実行: `pip install -r requirements-dev.txt && python -m pytest`(設定は `pyproject.toml`)。ホストの Python に依存を入れたくなければ
   `docker run --rm -v "$PWD:/src:ro" python:3.13-slim sh -c 'cp -r /src /w && cd /w && pip install -q -r requirements-dev.txt && python -m pytest'`
-- PWA の計算(`pwa/geo.js`)と観光地の取得(`pwa/poi.js`)は `node --test 'pwa/tests/*.test.js'`(`npm run test:pwa`)。依存パッケージはない
+- PWA の計算(`pwa/geo.js`・`layout.js`・`sky.js`)と観光地の取得(`pwa/poi.js`)は `node --test 'pwa/tests/*.test.js'`(`npm run test:pwa`)。依存パッケージはない
 - CI(`.github/workflows/ci.yml`)でテストを実行し、カバレッジを SonarCloud に渡す
 - 実機でしか確かめられないこと(LCD の表示、カメラ、推論速度、温度)は、`scripts/deploy.sh` で pi_a に配置して確認する
 

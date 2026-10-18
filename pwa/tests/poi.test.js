@@ -59,6 +59,14 @@ test('取得に失敗したら例外にする', async () => {
   await assert.rejects(fetchPois(35, 139, 30, { fetch, storage: memoryStorage() }), /HTTP 429/);
 });
 
+test('打ち切られたら分かる文言にする', async () => {
+  const fetch = async (url, init) => {
+    assert.ok(init.signal instanceof AbortSignal);
+    throw Object.assign(new Error('timeout'), { name: 'TimeoutError' });
+  };
+  await assert.rejects(fetchPois(35, 139, 30, { fetch, storage: memoryStorage() }), /120 秒応答しません/);
+});
+
 test('保存がなければ null', () => {
   assert.equal(loadCache(memoryStorage()), null);
 });

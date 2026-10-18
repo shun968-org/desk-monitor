@@ -1,11 +1,11 @@
 // オフラインでも開けるよう、アプリの本体と CDN のライブラリを端末に保存する。
 // 地図のタイルは開いた範囲だけ保存する(件数に上限)。観光地のデータは app.js が localStorage に保存する
-const VERSION = 'v3';
+const VERSION = 'v4';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles';
 const TILE_LIMIT = 500;
 const APP_FILES = [
-  './', 'index.html', 'style.css', 'app.js', 'geo.js', 'poi.js', 'manifest.webmanifest',
+  './', 'index.html', 'style.css', 'app.js', 'geo.js', 'layout.js', 'poi.js', 'sky.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css',
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js',

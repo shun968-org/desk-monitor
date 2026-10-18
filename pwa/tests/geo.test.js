@@ -83,4 +83,6 @@ test('cover の表示: 縦長の枠に横長の映像を入れると左右が切
   close(right.x - left.x, 800);
   close(t.toPx({ x: 0.5, y: 0.5 }).x, 150);
   close(t.visibleX, 300 / 800);
+  const back = t.fromPx(t.toPx({ x: 0.3, y: 0.7 }));
+  close(back.x, 0.3); close(back.y, 0.7);
 });
